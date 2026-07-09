@@ -188,7 +188,7 @@ luci-app-komari-agent-c/
 ├── include/                # 公共头文件（version.h 等）
 ├── luci/                   # LuCI 前端（Lua + CBI）
 ├── openwrt/                # OpenWrt 包定义（Makefile + init/config 文件）
-├── scripts/                # 构建/打包/验证脚本
+├── scripts/                # 构建/测试/发布/版本管理脚本（11 个工具）
 ├── src/                    # C 源代码（按模块组织）
 ├── tests/                  # Unity 单元测试
 ├── .github/workflows/      # CI/CD 配置（ci.yml + release.yml）
@@ -257,6 +257,34 @@ Linux/OpenWrt 默认启用 5 项硬化选项：
 2. **build-binaries** — 构建独立二进制（8 架构 Docker）
 3. **build-luci** — 构建 LuCI 包（2 版本）
 4. **release** — 汇总产物并创建 GitHub Release
+
+### 依赖更新（`.github/dependabot.yml`）
+
+Dependabot 自动管理依赖版本更新，每周一检查：
+
+- **github-actions** — PR 标题格式 `ci(deps): bump <action> from <old> to <new>`
+- **docker** — PR 标题格式 `build(deps): bump <image> from <old> to <new>`
+
+### 代码质量工具
+
+`lint` job 集成以下检查：
+
+- **codespell** — 拼写检查。如需新增忽略词，编辑 `ci.yml` 中 `codespell` 命令的 `--ignore-words-list` 参数
+- **Shell 语法** — 通过 `bash -n` 检查所有 `.sh` 文件
+- **YAML 校验** — 验证 workflow 文件 YAML 语法
+- **verify_ci_config.py** — CI 配置一致性校验，可本地运行：`python scripts/verify_ci_config.py all`
+
+### 管理脚本
+
+`scripts/` 目录包含 11 个工具脚本，除 `docker-build.sh` 和 `update-version.sh` 外，还包括：
+
+- `verify_ci_config.py` — CI 配置验证（见上文）
+- `lock-docker-images.sh` — 锁定 Docker 镜像摘要
+- `apk-build.sh` / `ipkg-build.sh` — APK/IPK 包构建
+- `musl-check.sh` — musl libc 兼容性检查
+- `generate-release-notes.sh` — 生成 Release Notes
+- `openwrt-build.sh` — OpenWrt 独立构建包装
+- `build.sh` — 通用构建入口
 
 ## LuCI 前端
 

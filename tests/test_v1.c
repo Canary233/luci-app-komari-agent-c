@@ -76,7 +76,7 @@ void test_v1_build_report_payload_null_args(void) {
 
 /* The caller retains ownership of the cJSON object: the build function must
  * not free it. After calling v1_build_report_payload, the input object must
- * still be valid and re-usable. */
+ * still be valid and reusable. */
 void test_v1_build_report_payload_does_not_free_input(void) {
     cJSON *report = cJSON_CreateObject();
     TEST_ASSERT_NOT_NULL(report);

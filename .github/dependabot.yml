@@ -20,7 +20,7 @@ updates:
       - "dependencies"
       - "github-actions"
     commit-message:
-      prefix: "ci(deps)"
+      prefix: "ci"
       include: "scope"
     groups:
       # Group minor/patch updates together to reduce PR noise
@@ -40,5 +40,5 @@ updates:
       - "dependencies"
       - "docker"
     commit-message:
-      prefix: "build(deps)"
+      prefix: "build"
       include: "scope"
