@@ -98,25 +98,25 @@ static void *terminal_read_thread(void *arg) {
     return NULL;
 }
 
-/* Find an available shell */
-static const char *find_shell(void) {
+/* Find an available shell. The resolved path is written into the caller
+ * provided buffer (no shared static buffer, so concurrent terminal sessions
+ * cannot race on it). Returns 0 on success, -1 when no usable shell exists. */
+static int find_shell(char *buf, size_t buf_len) {
+    if (!buf || buf_len == 0) return -1;
+
     /* Get the user's default shell from /etc/passwd.
      * Use the reentrant getpwuid_r because getpwuid returns a pointer to a
-     * shared static buffer that can be clobbered by other threads. The shell
-     * path is copied into a stable static buffer so the caller can use it
-     * after the getpwuid_r scratch buffer goes out of scope. */
+     * shared static buffer that can be clobbered by other threads. */
     uid_t uid = getuid();
     struct passwd pwd;
     struct passwd *result = NULL;
-    char buf[1024];
-    static char shell_path[256];
+    char scratch[1024];
 
-    if (getpwuid_r(uid, &pwd, buf, sizeof(buf), &result) == 0 && result) {
+    if (getpwuid_r(uid, &pwd, scratch, sizeof(scratch), &result) == 0 && result) {
         if (pwd.pw_shell && pwd.pw_shell[0] != '\0') {
             if (access(pwd.pw_shell, X_OK) == 0) {
-                strncpy(shell_path, pwd.pw_shell, sizeof(shell_path) - 1);
-                shell_path[sizeof(shell_path) - 1] = '\0';
-                return shell_path;
+                utils_set_string(buf, buf_len, pwd.pw_shell);
+                return 0;
             }
         }
     }
@@ -125,11 +125,12 @@ static const char *find_shell(void) {
     const char *shells[] = {"/bin/bash", "/bin/zsh", "/bin/sh", "/bin/ash", NULL};
     for (int i = 0; shells[i]; i++) {
         if (access(shells[i], X_OK) == 0) {
-            return shells[i];
+            utils_set_string(buf, buf_len, shells[i]);
+            return 0;
         }
     }
 
-    return NULL;
+    return -1;
 }
 
 terminal_t *terminal_create(int cols, int rows) {
@@ -149,12 +150,38 @@ terminal_t *terminal_create(int cols, int rows) {
 int terminal_start(terminal_t *term, const char *shell) {
     if (!term) return -1;
     
-    const char *sh = shell ? shell : find_shell();
-    if (!sh) {
-        KOMARI_LOG_ERROR("No available shell found");
+    char shell_buf[256];
+    const char *sh;
+    if (shell) {
+        sh = shell;
+    } else {
+        if (find_shell(shell_buf, sizeof(shell_buf)) != 0) {
+            KOMARI_LOG_ERROR("No available shell found");
+            return -1;
+        }
+        sh = shell_buf;
+    }
+
+    /* Build the child environment in the parent BEFORE forkpty so the child
+     * never calls setenv() (which may allocate) after fork. In a
+     * multithreaded process, malloc in the forked child can deadlock if
+     * another thread held the heap lock at fork time (fork-in-multithread
+     * hazard). The child inherits the current environment plus the
+     * terminal-specific variables and passes them to execle. */
+    extern char **environ;
+    int env_count = 0;
+    while (environ && environ[env_count]) env_count++;
+    char **envp = malloc((size_t)(env_count + 4) * sizeof(char *));
+    if (!envp) {
+        KOMARI_LOG_ERROR("Failed to allocate child environment");
         return -1;
     }
-    
+    for (int i = 0; i < env_count; i++) envp[i] = environ[i];
+    envp[env_count] = "TERM=xterm-256color";
+    envp[env_count + 1] = "LANG=C.UTF-8";
+    envp[env_count + 2] = "LC_ALL=C.UTF-8";
+    envp[env_count + 3] = NULL;
+
     struct winsize win;
     memset(&win, 0, sizeof(win));
     win.ws_col = term->cols;
@@ -166,15 +193,13 @@ int terminal_start(terminal_t *term, const char *shell) {
     
     term->pid = forkpty(&term->master_fd, NULL, NULL, &win);
     if (term->pid < 0) {
+        free(envp);
         KOMARI_LOG_ERROR("forkpty failed: %s", strerror(errno));
         return -1;
     }
     
     if (term->pid == 0) {
-        /* Child process */
-        setenv("TERM", "xterm-256color", 1);
-        setenv("LANG", "C.UTF-8", 1);
-        setenv("LC_ALL", "C.UTF-8", 1);
+        /* Child process: only async-signal-safe calls here (no malloc) */
 
         /* Create a new process group */
         setpgid(0, 0);
@@ -190,10 +215,12 @@ int terminal_start(terminal_t *term, const char *shell) {
             }
         }
 
-        /* Execute the shell */
-        execl(sh, sh, (char *)NULL);
+        /* Execute the shell with the pre-built environment (no setenv) */
+        execle(sh, sh, (char *)NULL, envp);
         _exit(127);
     }
+
+    free(envp);
 
     /* Parent process */
     setpgid(term->pid, term->pid);
@@ -264,7 +291,7 @@ void terminal_set_user_data(terminal_t *term, void *data) {
 int terminal_wait(terminal_t *term) {
     if (!term || term->pid <= 0) return -1;
 
-    int status;
+    int status = 0;
     pid_t ret = waitpid(term->pid, &status, 0);
     if (ret > 0) {
         term->pid = -1;  /* mark as reaped to prevent double-reap */

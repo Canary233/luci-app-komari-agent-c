@@ -753,8 +753,12 @@ static void *report_thread(void *arg) {
             }
             
             if (retries >= g_config.max_retries) {
-                KOMARI_LOG_ERROR("[WebSocket] Max retries reached");
-                break;
+                KOMARI_LOG_ERROR("[WebSocket] Max retries reached, will retry again");
+                /* Continue the outer loop instead of exiting the report thread:
+                 * a transient outage longer than max_retries * reconnect_interval
+                 * must not permanently disable reporting. The next outer cycle
+                 * re-attempts the connection. */
+                continue;
             }
         }
         
@@ -1029,6 +1033,12 @@ int main(int argc, char *argv[]) {
      * endpoint). It never aborts the process; the explicit checks below
      * still decide whether the agent can start. */
     config_validate(&g_config);
+
+    /* Apply the NIC / mount point filters to the monitoring module so the
+     * configured include_nics / exclude_nics / include_mountpoints options
+     * take effect (they were previously loaded but never consumed). */
+    monitoring_set_nic_filters(g_config.include_nics, g_config.exclude_nics);
+    monitoring_set_mountpoint_filter(g_config.include_mountpoints);
 
     /* Ignore SIGPIPE to prevent process termination on broken pipe (mirrors Go runtime default).
      * Network write operations (send/SSL_write) will return EPIPE/EPIPE error instead. */

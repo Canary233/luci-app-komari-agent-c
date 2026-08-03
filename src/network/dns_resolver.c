@@ -49,12 +49,15 @@ static char g_custom_dns[DNS_RESOLVER_MAX_ADDR_LEN] = "";
 static int g_use_custom_dns = 0;
 
 /* Sleep for the specified number of milliseconds. Used to space out DNS
- * query retries without blocking for whole seconds. */
+ * query retries without blocking for whole seconds. Retries on EINTR so a
+ * signal (e.g. SIGCHLD from a concurrent fork) does not shorten the
+ * backoff interval. */
 static void dns_resolver_msleep(int milliseconds) {
     struct timespec ts;
     ts.tv_sec = milliseconds / 1000;
     ts.tv_nsec = (long)(milliseconds % 1000) * 1000000L;
-    nanosleep(&ts, NULL);
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
+    }
 }
 
 int dns_resolver_init(const char *custom_dns) {

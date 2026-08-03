@@ -223,6 +223,31 @@ int monitoring_get_ip_address(char *ipv4, size_t ipv4_len,
                                char *ipv6, size_t ipv6_len);
 
 /**
+ * Configure the network interface include/exclude filters.
+ *
+ * These filters were previously dead configuration: include_nics /
+ * exclude_nics were loaded by config_load_* but never consumed. The
+ * monitoring collection functions do not receive agent_config_t, so the
+ * filters are stored module-level and applied inside
+ * monitoring_get_net_info. Call once at startup after configuration is
+ * loaded.
+ *
+ * @param include Comma-separated list of interface names to include (empty = all)
+ * @param exclude Comma-separated list of interface names to exclude (empty = none)
+ */
+void monitoring_set_nic_filters(const char *include, const char *exclude);
+
+/**
+ * Configure the mount point include filter.
+ *
+ * Same dead-configuration fix as monitoring_set_nic_filters: include_
+ * mountpoints is now applied inside monitoring_get_disk_info.
+ *
+ * @param include Comma-separated list of mount points to include (empty = all)
+ */
+void monitoring_set_mountpoint_filter(const char *include);
+
+/**
  * Force a network speed sample update by querying current net info.
  *
  * @param state Caller-owned rate calculation state (may be NULL)

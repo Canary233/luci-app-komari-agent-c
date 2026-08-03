@@ -61,6 +61,42 @@ static time_t g_disk_cache_ts = 0;
 static time_t g_conn_cache_ts = 0;
 static time_t g_process_count_ts = 0;
 
+/* NIC / mount point filters. Configured via config_load_* (include_nics,
+ * exclude_nics, include_mountpoints) through monitoring_set_nic_filters /
+ * monitoring_set_mountpoint_filter and applied by the collection functions,
+ * which do not receive agent_config_t. */
+static char g_include_nics[MAX_NICS_LEN] = "";
+static char g_exclude_nics[MAX_NICS_LEN] = "";
+static char g_include_mountpoints[MAX_MOUNTPOINTS_LEN] = "";
+
+/* Check whether `name` appears in a comma-separated list, ignoring
+ * surrounding whitespace around entries. */
+static int name_in_list(const char *list, const char *name) {
+    if (!list || !*list || !name || !*name) return 0;
+    size_t name_len = strlen(name);
+    const char *p = list;
+    while (*p) {
+        while (*p == ' ' || *p == ',') p++;
+        const char *start = p;
+        while (*p && *p != ',') p++;
+        size_t len = (size_t)(p - start);
+        while (len > 0 && start[len - 1] == ' ') len--;
+        if (len == name_len && strncmp(start, name, len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void monitoring_set_nic_filters(const char *include, const char *exclude) {
+    utils_set_string(g_include_nics, sizeof(g_include_nics), include);
+    utils_set_string(g_exclude_nics, sizeof(g_exclude_nics), exclude);
+}
+
+void monitoring_set_mountpoint_filter(const char *include) {
+    utils_set_string(g_include_mountpoints, sizeof(g_include_mountpoints), include);
+}
+
 void monitoring_net_speed_update(monitoring_net_state_t *state) {
     net_info_t info;
     monitoring_get_net_info(state, &info);
@@ -298,6 +334,12 @@ int monitoring_get_disk_info(disk_info_t *info) {
                 strcmp(fstype, "cgroup2") == 0) {
                 continue;
             }
+
+            /* Apply the configured mount point include filter. */
+            if (g_include_mountpoints[0] != '\0' &&
+                !name_in_list(g_include_mountpoints, mountpoint)) {
+                continue;
+            }
             
             struct statvfs st;
             if (statvfs(mountpoint, &st) == 0) {
@@ -380,6 +422,10 @@ int monitoring_get_net_info(monitoring_net_state_t *state, net_info_t *info) {
             while (*p == ' ') p++;
 
             if (strcmp(p, "lo") == 0) continue;
+
+            /* Apply the configured NIC include/exclude filters. */
+            if (g_include_nics[0] != '\0' && !name_in_list(g_include_nics, p)) continue;
+            if (g_exclude_nics[0] != '\0' && name_in_list(g_exclude_nics, p)) continue;
 
             total_rx += rx_bytes;
             total_tx += tx_bytes;
@@ -615,7 +661,7 @@ int monitoring_get_ip_address(char *ipv4, size_t ipv4_len,
         
         int family = ifa->ifa_addr->sa_family;
         
-        if (family == AF_INET && ipv4 && ipv4[0] == '\0') {
+        if (family == AF_INET && ipv4 && ipv4_len > 0 && ipv4[0] == '\0') {
             char host[NI_MAXHOST];
             if (getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in),
                            host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST) == 0) {
@@ -623,7 +669,7 @@ int monitoring_get_ip_address(char *ipv4, size_t ipv4_len,
                 /* Explicit NUL termination in case source fills the buffer. */
                 ipv4[ipv4_len - 1] = '\0';
             }
-        } else if (family == AF_INET6 && ipv6 && ipv6[0] == '\0') {
+        } else if (family == AF_INET6 && ipv6 && ipv6_len > 0 && ipv6[0] == '\0') {
             char host[NI_MAXHOST];
             struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)ifa->ifa_addr;
             if (!IN6_IS_ADDR_LINKLOCAL(&addr6->sin6_addr)) {

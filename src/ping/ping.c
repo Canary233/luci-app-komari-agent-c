@@ -354,6 +354,22 @@ int ping_task_icmp(const char *target, int timeout_ms, const char *custom_dns) {
 }
 
 int ping_task_tcp(const char *target, int timeout_ms, const char *custom_dns) {
+    /* Wrap a bare IPv6 literal (e.g. "2001:db8::1") in brackets first so the
+     * host:port split below does not mistake the colons inside the address
+     * for the port separator (mirrors the handling in ping_task_http). */
+    char adjusted_target[256];
+    const char *effective_target = target;
+    if (target[0] != '[' && strchr(target, ':') != NULL) {
+        struct in6_addr a6;
+        if (inet_pton(AF_INET6, target, &a6) == 1) {
+            int adj_n = snprintf(adjusted_target, sizeof(adjusted_target), "[%s]", target);
+            if (adj_n < 0 || (size_t)adj_n >= sizeof(adjusted_target)) {
+                return -1;
+            }
+            effective_target = adjusted_target;
+        }
+    }
+
     /* Split host:port first so the host part can be resolved correctly.
        Use strrchr to locate the last colon, which avoids mistaking the
        colons inside a literal IPv6 address for the port separator. For
@@ -361,16 +377,16 @@ int ping_task_tcp(const char *target, int timeout_ms, const char *custom_dns) {
        port separator after the closing bracket (T10.3). */
     char host[256];
     char port_str[8] = "80";
-    const char *colon = strrchr(target, ':');
+    const char *colon = strrchr(effective_target, ':');
     if (colon) {
-        size_t host_len = (size_t)(colon - target);
+        size_t host_len = (size_t)(colon - effective_target);
         if (host_len >= sizeof(host)) host_len = sizeof(host) - 1;
-        strncpy(host, target, host_len);
+        strncpy(host, effective_target, host_len);
         host[host_len] = '\0';
         strncpy(port_str, colon + 1, sizeof(port_str) - 1);
         port_str[sizeof(port_str) - 1] = '\0';
     } else {
-        strncpy(host, target, sizeof(host) - 1);
+        strncpy(host, effective_target, sizeof(host) - 1);
         host[sizeof(host) - 1] = '\0';
     }
 
@@ -753,27 +769,32 @@ int ping_task_http(const char *target, int timeout_ms, const char *custom_dns, i
     }
 
     char recv_buf[1024];
-    int64_t end_time;
+    int recv_len = 0;
+    while (recv_len < (int)sizeof(recv_buf) - 1) {
+        int n;
+        if (use_tls) {
+            n = SSL_read(ssl, recv_buf + recv_len, (int)sizeof(recv_buf) - 1 - recv_len);
+        } else {
+            n = recv(fd, recv_buf + recv_len, sizeof(recv_buf) - 1 - (size_t)recv_len, 0);
+        }
+        if (n <= 0) break;
+        recv_len += n;
+        recv_buf[recv_len] = '\0';
+        /* Stop once the header block has arrived so a status line split
+         * across TCP segments or TLS records is not mistaken for failure. */
+        if (strstr(recv_buf, "\r\n\r\n") != NULL) break;
+    }
+    int64_t end_time = get_time_ms();
 
-    if (use_tls) {
-        int n = SSL_read(ssl, recv_buf, sizeof(recv_buf) - 1);
-        end_time = get_time_ms();
-        if (n <= 0) {
+    if (recv_len <= 0) {
+        if (use_tls) {
             SSL_free(ssl);
             SSL_CTX_free(ssl_ctx);
-            close(fd);
-            return -1;
         }
-        recv_buf[n] = '\0';
-    } else {
-        int n = recv(fd, recv_buf, sizeof(recv_buf) - 1, 0);
-        end_time = get_time_ms();
-        if (n <= 0) {
-            close(fd);
-            return -1;
-        }
-        recv_buf[n] = '\0';
+        close(fd);
+        return -1;
     }
+    recv_buf[recv_len] = '\0';
 
     if (use_tls) {
         SSL_shutdown(ssl);

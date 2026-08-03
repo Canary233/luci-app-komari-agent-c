@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <limits.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -98,21 +99,47 @@ static int utils_exec_capture(char *const argv[], char *output, size_t output_si
         _exit(127);
     }
 
-    /* Parent: close write end and read child output */
+    /* Parent: close write end and read child output. The read loop is
+     * bounded by poll() so that a command which spawns a background process
+     * inheriting the pipe write end (and producing no output) cannot block
+     * the caller forever: once the direct child has exited, we stop waiting
+     * for data even if a grandchild still holds the pipe open. Commands
+     * that legitimately run for a long time keep the loop alive. */
     close(pipefd[1]);
+
+    int status = 0;
+    pid_t reaped = 0;
 
     size_t total = 0;
     if (output && output_size > 0) {
         output[0] = '\0';
         while (total < output_size - 1) {
-            ssize_t n;
-            /* Retry on EINTR (MIN-61) */
-            do {
-                n = read(pipefd[0], output + total, output_size - 1 - total);
-            } while (n < 0 && errno == EINTR);
-            if (n > 0) {
-                total += (size_t)n;
+            struct pollfd pfd = {.fd = pipefd[0], .events = POLLIN};
+            int pr = poll(&pfd, 1, 200);
+            if (pr > 0) {
+                ssize_t n;
+                /* Retry on EINTR (MIN-61) */
+                do {
+                    n = read(pipefd[0], output + total, output_size - 1 - total);
+                } while (n < 0 && errno == EINTR);
+                if (n > 0) {
+                    total += (size_t)n;
+                } else {
+                    break;  /* EOF or read error */
+                }
+            } else if (pr == 0) {
+                /* Nothing readable within 200ms. If the child has already
+                 * exited, the pipe may still be held open by a background
+                 * grandchild; stop waiting so the caller is never stuck.
+                 * If the child is still running, keep polling. */
+                pid_t wret = waitpid(pid, &status, WNOHANG);
+                if (wret == pid) {
+                    reaped = pid;
+                    break;
+                }
+                if (wret < 0) break;
             } else {
+                if (errno == EINTR) continue;
                 break;
             }
         }
@@ -120,20 +147,35 @@ static int utils_exec_capture(char *const argv[], char *output, size_t output_si
     } else {
         char buf[1024];
         for (;;) {
-            ssize_t n;
-            do {
-                n = read(pipefd[0], buf, sizeof(buf));
-            } while (n < 0 && errno == EINTR);
-            if (n <= 0) break;
+            struct pollfd pfd = {.fd = pipefd[0], .events = POLLIN};
+            int pr = poll(&pfd, 1, 200);
+            if (pr > 0) {
+                ssize_t n;
+                do {
+                    n = read(pipefd[0], buf, sizeof(buf));
+                } while (n < 0 && errno == EINTR);
+                if (n <= 0) break;
+            } else if (pr == 0) {
+                pid_t wret = waitpid(pid, &status, WNOHANG);
+                if (wret == pid) {
+                    reaped = pid;
+                    break;
+                }
+                if (wret < 0) break;
+            } else {
+                if (errno == EINTR) continue;
+                break;
+            }
         }
     }
     close(pipefd[0]);
 
-    /* Reap the child, retrying on EINTR */
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno == EINTR) continue;
-        break;
+    /* Reap the child if the read loop did not already, retrying on EINTR */
+    if (reaped != pid) {
+        while (waitpid(pid, &status, 0) < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
     }
     if (exit_code) {
         if (WIFEXITED(status)) {

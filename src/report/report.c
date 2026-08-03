@@ -25,6 +25,7 @@
 #include "monitoring.h"
 #include "config.h"
 #include "utils.h"
+#include "logger.h"
 #include "virtual.h"
 #include "gpu.h"
 #include "cJSON.h"
@@ -343,6 +344,14 @@ int report_generate_basic_info(const agent_config_t *config, char *buf, size_t b
     const char *ipv4_val = config->custom_ipv4[0] ? config->custom_ipv4 : ipv4;
     const char *ipv6_val = config->custom_ipv6[0] ? config->custom_ipv6 : ipv6;
 
+    /* Escape the IP values before embedding them in JSON. custom_ipv4/
+     * custom_ipv6 are user-configured strings and may contain quotes or
+     * control characters that would otherwise break the payload. */
+    char ipv4_escaped[192];
+    char ipv6_escaped[256];
+    escape_json_string(ipv4_val, ipv4_escaped, sizeof(ipv4_escaped));
+    escape_json_string(ipv6_val, ipv6_escaped, sizeof(ipv6_escaped));
+
     const char *virt_type = virt_detect();
 
     int len = snprintf(buf, buf_len,
@@ -366,8 +375,8 @@ int report_generate_basic_info(const agent_config_t *config, char *buf, size_t b
         cpu.cpu_arch,
         os_name_escaped,
         kernel_escaped,
-        ipv4_val,
-        ipv6_val,
+        ipv4_escaped,
+        ipv6_escaped,
         mem.total,
         swap.total,
         disk.total,
@@ -577,11 +586,20 @@ static int http_post_with_headers(const char *url, const char *payload, int igno
         }
     }
 
-    /* Build HTTP request */
-    char request[16384];
+    /* Build HTTP request. The payload can be large (up to 64 KiB for a task
+     * result), so size the request buffer dynamically instead of using a
+     * fixed stack array. */
+    size_t request_cap = strlen(payload) + 4096;
+    char *request = malloc(request_cap);
+    if (!request) {
+        if (ssl) SSL_free(ssl);
+        if (ssl_ctx) SSL_CTX_free(ssl_ctx);
+        close(fd);
+        return -1;
+    }
     int req_len;
     if (extra_headers && extra_headers[0] != '\0') {
-        req_len = snprintf(request, sizeof(request),
+        req_len = snprintf(request, request_cap,
             "POST %s HTTP/1.1\r\n"
             "Host: %s\r\n"
             "Content-Type: application/json\r\n"
@@ -592,7 +610,7 @@ static int http_post_with_headers(const char *url, const char *payload, int igno
             "%s",
             path, host, strlen(payload), extra_headers, payload);
     } else {
-        req_len = snprintf(request, sizeof(request),
+        req_len = snprintf(request, request_cap,
             "POST %s HTTP/1.1\r\n"
             "Host: %s\r\n"
             "Content-Type: application/json\r\n"
@@ -604,7 +622,8 @@ static int http_post_with_headers(const char *url, const char *payload, int igno
     }
 
     /* Check for snprintf truncation or encoding error */
-    if (req_len < 0 || (size_t)req_len >= sizeof(request)) {
+    if (req_len < 0 || (size_t)req_len >= request_cap) {
+        free(request);
         if (ssl) SSL_free(ssl);
         if (ssl_ctx) SSL_CTX_free(ssl_ctx);
         close(fd);
@@ -613,24 +632,34 @@ static int http_post_with_headers(const char *url, const char *payload, int igno
 
     /* Send the entire request, handling partial writes and EINTR. */
     if (send_full(ssl, fd, request, (size_t)req_len) != 0) {
+        free(request);
         if (ssl) SSL_free(ssl);
         if (ssl_ctx) SSL_CTX_free(ssl_ctx);
         close(fd);
         return -1;
     }
+    free(request);
     
-    /* Read response (simple read, does not parse the full response) */
+    /* Read the response. Loop until the header terminator arrives (or the
+     * buffer is full / the socket times out) so a status line split across
+     * TCP segments or TLS records is not mistaken for a failure. */
     char response[1024];
     int recv_len = 0;
-    if (ssl) {
-        recv_len = SSL_read(ssl, response, sizeof(response) - 1);
-    } else {
-        recv_len = recv(fd, response, sizeof(response) - 1, 0);
+    while (recv_len < (int)sizeof(response) - 1) {
+        int n;
+        if (ssl) {
+            n = SSL_read(ssl, response + recv_len, (int)sizeof(response) - 1 - recv_len);
+        } else {
+            n = recv(fd, response + recv_len, sizeof(response) - 1 - (size_t)recv_len, 0);
+        }
+        if (n <= 0) break;
+        recv_len += n;
+        response[recv_len] = '\0';
+        if (strstr(response, "\r\n\r\n") != NULL) break;
     }
     
     int ret = 0;
     if (recv_len > 0) {
-        response[recv_len] = '\0';
         /* Check HTTP status code at the start of the response. Using strncmp
          * avoids matching "HTTP/1.1 200" inside the response body. */
         if (strncmp(response, "HTTP/1.1 200", 12) == 0 ||
@@ -708,8 +737,19 @@ int report_upload_task_result(const agent_config_t *config,
         return -1;
     }
 
-    char payload[8192];
-    int n = snprintf(payload, sizeof(payload),
+    /* Allocate the payload on the heap: the escaped command output can be up
+     * to 6x the raw 8 KiB exec buffer (control characters become \u00XX),
+     * which exceeds any reasonable fixed stack buffer. A truncated result
+     * used to be dropped silently; the failure is now logged explicitly. */
+    const size_t payload_cap = 64 * 1024;
+    char *payload = malloc(payload_cap);
+    if (!payload) {
+        free(escaped_result);
+        free(escaped_task_id);
+        return -1;
+    }
+
+    int n = snprintf(payload, payload_cap,
         "{\"task_id\":\"%s\",\"result\":\"%s\",\"exit_code\":%d,\"finished_at\":%" PRIu64 "}",
         escaped_task_id, escaped_result, exit_code, finished_at);
 
@@ -718,7 +758,10 @@ int report_upload_task_result(const agent_config_t *config,
 
     /* Abort if the payload was truncated: a truncated JSON body would be
      * rejected by the server and could expose partial/malformed data. */
-    if (n < 0 || (size_t)n >= sizeof(payload)) {
+    if (n < 0 || (size_t)n >= payload_cap) {
+        KOMARI_LOG_ERROR("[Report] Task result payload truncated (%d bytes, cap %zu); "
+                         "result too large to upload", n, payload_cap);
+        free(payload);
         return -1;
     }
 
@@ -729,12 +772,15 @@ int report_upload_task_result(const agent_config_t *config,
                  "CF-Access-Client-Secret: %s\r\n",
                  config->cf_access_client_id, config->cf_access_client_secret);
         if (hdr_n < 0 || (size_t)hdr_n >= sizeof(headers)) {
+            free(payload);
             return -1;
         }
     }
-    
-    return http_post_with_headers(url, payload, config->ignore_unsafe_cert,
-                                   headers[0] != '\0' ? headers : NULL);
+
+    int ret = http_post_with_headers(url, payload, config->ignore_unsafe_cert,
+                                     headers[0] != '\0' ? headers : NULL);
+    free(payload);
+    return ret;
 }
 
 int report_upload_ping_result(const agent_config_t *config,

@@ -398,10 +398,21 @@ int netstatic_get_monthly_traffic(netstatic_t *ns, const char *iface,
     *rx = 0;
     
     time_t now = time(NULL);
-    struct tm *tm_now = localtime(&now);
-    int current_month = tm_now->tm_mon;
-    int current_year = tm_now->tm_year;
-    
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+
+    /* Compute the [start, end) timestamp range of the current month once, so
+     * the per-sample loop below only compares timestamps instead of calling
+     * the non-reentrant localtime() for every sample (up to 200k of them).
+     * mktime normalizes tm_mon overflow into the next year. */
+    tm_now.tm_mday = 1;
+    tm_now.tm_hour = 0;
+    tm_now.tm_min = 0;
+    tm_now.tm_sec = 0;
+    time_t month_start = mktime(&tm_now);
+    tm_now.tm_mon += 1;
+    time_t month_end = mktime(&tm_now);
+
     pthread_mutex_lock(&ns->mutex);
     
     for (size_t i = 0; i < ns->interface_count; i++) {
@@ -410,9 +421,8 @@ int netstatic_get_monthly_traffic(netstatic_t *ns, const char *iface,
             
             for (size_t j = 0; j < is->data_count; j++) {
                 time_t t = (time_t)is->data[j].timestamp;
-                struct tm *tm_data = localtime(&t);
 
-                if (tm_data->tm_mon == current_month && tm_data->tm_year == current_year) {
+                if (t >= month_start && t < month_end) {
                     /* Guard against uint64_t accumulation overflow so a
                        long-running counter cannot wrap back to a small
                        value (MIN-19). Clamp at UINT64_MAX instead. */
@@ -545,6 +555,12 @@ int netstatic_load(netstatic_t *ns) {
 
             int record_count = cJSON_GetArraySize(iface_entry);
             if (record_count <= 0) continue;
+            /* Cap the restored history at NETSTATIC_MAX_SAMPLES_PER_INTERFACE
+             * so a corrupted or oversized persisted file cannot trigger an
+             * unbounded allocation at load time. */
+            if (record_count > NETSTATIC_MAX_SAMPLES_PER_INTERFACE) {
+                record_count = NETSTATIC_MAX_SAMPLES_PER_INTERFACE;
+            }
             size_t count = (size_t)record_count;
 
             /* Grow the sample buffer if the persisted history exceeds current capacity */

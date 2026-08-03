@@ -488,8 +488,13 @@ static int send_full(ws_client_t *client, const char *data, size_t len) {
  * with a 4-byte masking key chosen by the client. */
 static int ws_send_frame(ws_client_t *client, int opcode, const char *data, size_t len) {
     /* WS_HEADER_SIZE (14) already accounts for 2-byte basic header + 8-byte extended
-     * length + 4-byte mask key, which is the worst case. */
-    unsigned char frame[WS_HEADER_SIZE + (len > 0 ? len : 0)];
+     * length + 4-byte mask key, which is the worst case. Allocate the frame on the
+     * heap instead of using a VLA: payloads reach 8 KiB for reports and 4 KiB for
+     * terminal output, and a stack array of that size risks overflow on embedded
+     * targets with small default thread stacks. */
+    size_t frame_cap = WS_HEADER_SIZE + len;
+    unsigned char *frame = malloc(frame_cap);
+    if (!frame) return -1;
     size_t frame_len = 0;
     unsigned char mask[4];
 
@@ -540,6 +545,7 @@ static int ws_send_frame(ws_client_t *client, int opcode, const char *data, size
     int rc = send_full(client, (const char *)frame, frame_len);
     pthread_mutex_unlock(&client->send_mutex);
 
+    free(frame);
     return rc;
 }
 
@@ -734,8 +740,17 @@ int ws_message_parse_from_json(const cJSON *root, ws_message_t *msg) {
  * close frames, and dispatches text frames to the JSON or raw handler. */
 static void *ws_recv_thread(void *arg) {
     ws_client_t *client = (ws_client_t *)arg;
-    /* +1 byte so that buffer[len] = '\0' is safe even when len == WS_MAX_MESSAGE_SIZE */
-    char buffer[WS_MAX_MESSAGE_SIZE + 1];
+    /* +1 byte so that buffer[len] = '\0' is safe even when len == WS_MAX_MESSAGE_SIZE.
+     * Heap-allocated so the thread keeps a small stack on embedded targets
+     * (a 64 KiB stack array plus frame buffers could overflow default
+     * OpenWrt/musl thread stacks). */
+    char *buffer = malloc(WS_MAX_MESSAGE_SIZE + 1);
+    if (!buffer) {
+        pthread_mutex_lock(&client->state_mutex);
+        client->connected = false;
+        pthread_mutex_unlock(&client->state_mutex);
+        return NULL;
+    }
 
     /* Reset any leftover fragment state from a previous connection so the
      * first frame of this session is treated as a fresh message. Both
@@ -875,6 +890,7 @@ static void *ws_recv_thread(void *arg) {
         }
     }
 
+    free(buffer);
     return NULL;
 }
 
