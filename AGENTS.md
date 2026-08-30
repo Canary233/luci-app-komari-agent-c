@@ -22,18 +22,47 @@
 采用 Conventional Commits 格式：
 
 ```
-<type>(<scope>): <subject>  # type/scope 英文，subject 中文或英文
+<type>(<scope>): <subject>
 
-<body>  # 中文或英文
-
-<footer>
+- <变更条目 1>
+- <变更条目 2>
+  <长条目续行>
 ```
 
-> **提交信息语言**：`type` 与 `scope` 必须使用英文；`subject` 与 `body` 可使用中文或英文，建议与同一提交内已使用的语言保持一致，且同一仓库的历史提交风格保持连贯。
+> **提交信息语言**：`type` 与 `scope` 必须使用英文；`subject` 与 `body` 使用中文，技术名词、标识符与配置项保留英文，与仓库历史提交风格保持连贯。
 
 **提交类型**：`feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`build`、`ci`、`chore`、`revert`
 
 **作用范围**：`i18n`、`luci`、`openwrt`、`workflows`、`core`、`utils`、`deps`、`tests`、`ci`、`config`
+
+#### 标题（subject）
+
+- 使用顿号/并列结构概括本次提交的 2-4 个要点，一行写完、结尾不加句号，例如：
+  - `fix(core): 修复死配置、堆栈溢出与阻塞风险等跨模块问题`
+  - `build(deps): 统一依赖版本声明、清理 OpenSSL 死代码、锁定供应链`
+- 细节留给正文，标题不逐条罗列；不引用问题编号、PR 号等外部编号。
+
+#### 正文（body）
+
+- 使用 `- ` 开头的**逐条变更列表**，而非叙述性散文段落；每条对应一项独立变更，单领域小提交可只有一条。
+- 每条采用「做了什么 + 为什么/解决什么」结构，把此前行为与现状对照写清（如「……，避免……」「……此前被静默丢弃」）。
+- 长条目在逗号处折行，续行缩进两个空格；一条变更不拆成多条，多项独立变更不并为一条。
+- 跨模块提交按模块或行为分组列条目，并保持与提交实际改动的文件一致。
+- 不引用审查报告、任务看板中的内部问题编号；源码注释中的编号（如 `MIN-34`）不带入提交信息。
+
+#### 提交拆分
+
+- 一个提交聚焦一个领域（模块/子系统）；按领域拆分为多个提交时，被依赖的接口改动应先于调用方提交，保证每个提交可独立构建。
+
+#### 完整示例
+
+```
+fix(core): 修复死配置、堆栈溢出与阻塞风险等跨模块问题
+
+- 应用 NIC/挂载点过滤器，修复 include_nics/exclude_nics/include_mountpoints 死配置
+- WebSocket 上报重试达上限后继续外层循环重试，避免持续故障永久禁用上报
+- 以堆分配替代 VLA/大栈数组，修复嵌入式小栈线程的溢出风险
+```
 
 ### 代码规范
 
@@ -49,7 +78,7 @@
 - 测试文件放置在 `tests/` 目录下
 - `KOMARI_BUILD_TESTS` 与 `BUILD_TESTING` 两个选项同步（见 `cmake/BuildOptions.cmake`）
 - 运行测试：`cmake -B build -DKOMARI_BUILD_TESTS=ON && cmake --build build && ctest --test-dir build --output-on-failure`
-- Docker 环境运行测试：`./scripts/docker-build.sh test`
+- Docker 环境运行测试：`./scripts/docker-build.sh test`——这是单元测试唯一的标准执行环境（CI 中由 `lint` job 的 `docker compose run --rm test` 执行），宿主机直连构建仅用于配置/语法检查
 
 ### 本地构建
 
@@ -87,6 +116,8 @@ cmake --preset analyze      # clang-tidy 静态分析
 ./scripts/docker-build.sh amd64    # 构建单架构
 ./scripts/docker-build.sh all      # 构建所有架构
 ./scripts/docker-build.sh test     # 运行单元测试
+# 供应链锁定：--build-arg BASE_IMAGE=<digest 锁定镜像>，流程见 docker/README.md
+./scripts/docker-build.sh amd64 --build-arg BASE_IMAGE=ubuntu:24.04@sha256:<digest>
 ```
 
 详见 [docker/README.md](docker/README.md)。
@@ -188,7 +219,7 @@ luci-app-komari-agent-c/
 ├── include/                # 公共头文件（version.h 等）
 ├── luci/                   # LuCI 前端（Lua + CBI）
 ├── openwrt/                # OpenWrt 包定义（Makefile + init/config 文件）
-├── scripts/                # 构建/测试/发布/版本管理脚本（11 个工具）
+├── scripts/                # 构建/测试/发布/版本管理脚本（10 个）+ ipkg/ 模板目录
 ├── src/                    # C 源代码（按模块组织）
 ├── tests/                  # Unity 单元测试
 ├── .github/workflows/      # CI/CD 配置（ci.yml + release.yml）
@@ -276,11 +307,11 @@ Dependabot 自动管理依赖版本更新，每周一检查：
 
 ### 管理脚本
 
-`scripts/` 目录包含 11 个工具脚本，除 `docker-build.sh` 和 `update-version.sh` 外，还包括：
+`scripts/` 目录包含 10 个工具脚本（另含 `ipkg/` 打包模板目录），除 `docker-build.sh` 和 `update-version.sh` 外，还包括：
 
 - `verify_ci_config.py` — CI 配置验证（见上文）
 - `lock-docker-images.sh` — 锁定 Docker 镜像摘要
-- `apk-build.sh` / `ipkg-build.sh` — APK/IPK 包构建
+- `apk-build.sh` / `ipkg-build.sh` — APK/IPK 包构建；`ipkg-build.sh -a <arch>` 可覆盖控制文件中的 Architecture 占位值
 - `musl-check.sh` — musl libc 兼容性检查
 - `generate-release-notes.sh` — 生成 Release Notes
 - `openwrt-build.sh` — OpenWrt 独立构建包装
@@ -291,7 +322,9 @@ Dependabot 自动管理依赖版本更新，每周一检查：
 LuCI 前端位于 `luci/` 目录，提供 Web 配置界面：
 
 - **3 个标签页**：配置（CBI 表单）、状态（实时仪表板）、日志（日志查看器）
-- **7 个后端 JSON API**：status、start、stop、restart、test_connection、log、clear_log
+- **6 个后端 JSON API**：status、start、stop、restart、test_connection、log
+- **状态数据契约**：agent 每个上报周期将连接状态与实时指标原子写入 `/tmp/komari-agent-c-status.json`（路径常量见 `src/platform/paths.h`），断连时写入 `connected: false`；状态页与 `api_get_status` 据此展示
+- **变更类 API 约定**：start/stop/restart/test_connection 必须为 POST 并校验 CSRF 令牌，视图以携带令牌的 POST 请求调用；新增变更类端点必须遵循同一模式
 - **i18n 支持**：中文（zh_Hans）翻译，`.po` → `.lmo` 编译
 - **ACL 权限**：通过 `luci-app-komari-agent-c` ACL 定义控制访问
 - **包元数据**：使用 `luci.mk` 标准流程，`LUCI_PKGARCH:=all`
@@ -305,6 +338,15 @@ LuCI 前端位于 `luci/` 目录，提供 Web 配置界面：
 3. `luci/Makefile` — `PKG_VERSION`
 
 发布新版本时，通过 `scripts/update-version.sh <version>` 一次性同步所有位置。
+
+### OpenWrt 服务（procd）
+
+`openwrt/files/komari-agent-c.init` 的维护注意事项：
+
+- **env 必须单次注入**：`procd_set_param env KEY=VAL` 每调用一次都会整体替换 env 表、仅最后一对生效，所有代理环境变量以 `set --` 拼装后在同一次调用中传入（或改用 `procd_append_param env`）。
+- **令牌走环境变量**：面板令牌经 `AGENT_TOKEN` 环境变量传递，不使用 `--token` 命令行参数——`/proc/<pid>/cmdline` 全局可读，`/proc/<pid>/environ` 仅属主可读。
+- **用户缺失回退**：init 在 `komari` 系统用户不存在时回退以 root 运行；该用户由 postinst 以 busybox 兼容方式（追加 `/etc/passwd`、`/etc/group`）创建，原版 OpenWrt 无 groupadd/useradd。
+- **报告间隔下限**：`config_validate` 将 interval 钳制为 ≥1 秒（LuCI CBI 表单允许 0.5，实际以 1 秒运行）。
 
 ## 多架构支持
 
