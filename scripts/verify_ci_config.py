@@ -271,6 +271,7 @@ class CIConfigValidator:
         if not err:
             jobs = ci_data.get("jobs", {})
 
+
             # test-openwrt-build must depend on test-binary-build
             towb = jobs.get("test-openwrt-build", {})
             self.check(
@@ -304,6 +305,10 @@ class CIConfigValidator:
                 "needs" not in lint,
                 f"got: {lint.get('needs')}"
             )
+        else:
+            # A missing or unparseable workflow must fail the run instead of
+            # silently skipping every enclosed check.
+            self.check("ci.yml: readable for job dependency check", False, err)
 
         release_data, err = self._read_yaml(".github/workflows/release.yml")
         if not err:
@@ -316,6 +321,10 @@ class CIConfigValidator:
                 release_needs == expected,
                 f"got: {release_needs}"
             )
+        else:
+            # A missing or unparseable workflow must fail the run instead of
+            # silently skipping every enclosed check.
+            self.check("release.yml: readable for job dependency check", False, err)
 
         self.logger.info("")
 
@@ -357,6 +366,8 @@ class CIConfigValidator:
                 len(missing) == 0,
                 f"missing: {missing}" if missing else ""
             )
+        else:
+            self.check("docker-compose.yml: readable for service check", False, err)
 
         self.logger.info("")
 
@@ -367,6 +378,7 @@ class CIConfigValidator:
         for workflow in ("ci.yml", "release.yml"):
             path = self.repo_root / ".github/workflows" / workflow
             if not path.exists():
+                self.check(f"{workflow}: exists", False)
                 continue
             content = path.read_text(encoding="utf-8")
 
@@ -406,7 +418,7 @@ class CIConfigValidator:
 
         content, err = self._read_file("docker/build.sh")
         if err:
-            self.logger.warning("  Skipping cross-compilation checks: %s", err)
+            self.check("docker/build.sh: readable for cross-compilation check", False, err)
             self.logger.info("")
             return
 
@@ -487,6 +499,8 @@ class CIConfigValidator:
             }
             for name, ok in refs.items():
                 self.check(f"CMakeLists.txt: {name}", ok)
+        else:
+            self.check("CMakeLists.txt: readable for reference check", False, err)
 
         self.logger.info("")
 
@@ -505,6 +519,8 @@ class CIConfigValidator:
             }
             for name, ok in refs.items():
                 self.check(f"openwrt/Makefile: {name}", ok)
+        else:
+            self.check("openwrt/Makefile: readable for reference check", False, err)
 
         # Required files
         for rel_path in ("openwrt/files/komari-agent-c.config",
@@ -520,6 +536,8 @@ class CIConfigValidator:
                     f"{workflow}: PKG_SOURCE removal sed",
                     "PKG_SOURCE_PROTO:/d" in content,
                 )
+            else:
+                self.check(f"{workflow}: readable for PKG_SOURCE check", False, err)
 
         self.logger.info("")
 

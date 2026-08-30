@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
-INCLUDES="-Iinclude -Iinclude/komari-agent-c -Isrc -Isrc/vendor -Isrc/utils -Isrc/config -Isrc/network -Isrc/monitoring -Isrc/protocol -Isrc/report -Isrc/ping -Isrc/terminal -Isrc/core -Isrc/autodiscovery -Isrc/update"
+INCLUDES="-Iinclude -Iinclude/komari-agent-c -Isrc -Isrc/vendor -Isrc/platform -Isrc/utils -Isrc/config -Isrc/network -Isrc/monitoring -Isrc/protocol -Isrc/report -Isrc/ping -Isrc/terminal -Isrc/core -Isrc/autodiscovery -Isrc/update"
 CFLAGS="-std=c99 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Wall -Wextra"
 
 # Note: musl-gcc comes with musl libc headers, do not add -I/usr/include (would cause glibc/musl header conflicts)
