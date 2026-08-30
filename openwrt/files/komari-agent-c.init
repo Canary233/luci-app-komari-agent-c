@@ -55,10 +55,6 @@ start_instance() {
 
 	procd_open_instance
 	procd_set_param command "$PROG"
-	# Drop root privileges to the dedicated komari system user/group.
-	procd_set_param user komari
-	procd_set_param group komari
-	procd_append_param command --token "$token"
 	procd_append_param command --endpoint "$endpoint"
 	procd_append_param command --interval "$interval"
 
@@ -66,23 +62,39 @@ start_instance() {
 	[ "$ignore_unsafe_cert" = "1" ] && procd_append_param command --insecure
 	[ "$disable_web_ssh" = "1" ] && procd_append_param command --disable-ssh
 
+	# Drop root privileges to the dedicated komari system user/group when it
+	# exists (created by postinst). If user creation failed on this system,
+	# run as root rather than failing to spawn the instance entirely.
+	if id komari >/dev/null 2>&1; then
+		procd_set_param user komari
+		procd_set_param group komari
+	fi
+
 	# Options without CLI flags are passed via environment variables consumed
-	# by config_load_from_env() in src/config/config.c. procd_set_param env
-	# injects them into the process environment.
-	procd_set_param env AGENT_MAX_RETRIES="$max_retries"
-	procd_set_param env AGENT_RECONNECT_INTERVAL="$reconnect_interval"
-	procd_set_param env AGENT_INFO_REPORT_INTERVAL="$info_report_interval"
-	procd_set_param env AGENT_MONTH_ROTATE="$month_rotate"
-	procd_set_param env AGENT_PROTOCOL_VERSION="$protocol_version"
-	procd_set_param env AGENT_DISABLE_AUTO_UPDATE="$disable_auto_update"
-	procd_set_param env AGENT_DISABLE_COMPRESSION="$disable_compression"
-	procd_set_param env AGENT_ENABLE_GPU="$enable_gpu"
-	[ -n "$include_nics" ] && procd_set_param env AGENT_INCLUDE_NICS="$include_nics"
-	[ -n "$exclude_nics" ] && procd_set_param env AGENT_EXCLUDE_NICS="$exclude_nics"
-	[ -n "$include_mountpoints" ] && procd_set_param env AGENT_INCLUDE_MOUNTPOINTS="$include_mountpoints"
-	[ -n "$custom_ipv4" ] && procd_set_param env AGENT_CUSTOM_IPV4="$custom_ipv4"
-	[ -n "$custom_ipv6" ] && procd_set_param env AGENT_CUSTOM_IPV6="$custom_ipv6"
-	[ -n "$auto_discovery_key" ] && procd_set_param env AGENT_AUTO_DISCOVERY_KEY="$auto_discovery_key"
+	# by config_load_from_env() in src/config/config.c. All pairs MUST be
+	# passed in a SINGLE procd_set_param env call: each call creates a fresh
+	# "env" table that replaces the previous one, so with split calls only
+	# the last pair would ever reach the process. The panel token is passed
+	# here instead of a --token command line argument because
+	# /proc/<pid>/cmdline is world-readable while /proc/<pid>/environ is
+	# restricted to the process owner.
+	set -- \
+		AGENT_TOKEN="$token" \
+		AGENT_MAX_RETRIES="$max_retries" \
+		AGENT_RECONNECT_INTERVAL="$reconnect_interval" \
+		AGENT_INFO_REPORT_INTERVAL="$info_report_interval" \
+		AGENT_MONTH_ROTATE="$month_rotate" \
+		AGENT_PROTOCOL_VERSION="$protocol_version" \
+		AGENT_DISABLE_AUTO_UPDATE="$disable_auto_update" \
+		AGENT_DISABLE_COMPRESSION="$disable_compression" \
+		AGENT_ENABLE_GPU="$enable_gpu"
+	[ -n "$include_nics" ] && set -- "$@" AGENT_INCLUDE_NICS="$include_nics"
+	[ -n "$exclude_nics" ] && set -- "$@" AGENT_EXCLUDE_NICS="$exclude_nics"
+	[ -n "$include_mountpoints" ] && set -- "$@" AGENT_INCLUDE_MOUNTPOINTS="$include_mountpoints"
+	[ -n "$custom_ipv4" ] && set -- "$@" AGENT_CUSTOM_IPV4="$custom_ipv4"
+	[ -n "$custom_ipv6" ] && set -- "$@" AGENT_CUSTOM_IPV6="$custom_ipv6"
+	[ -n "$auto_discovery_key" ] && set -- "$@" AGENT_AUTO_DISCOVERY_KEY="$auto_discovery_key"
+	procd_set_param env "$@"
 
 	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
 	procd_set_param stdout 1

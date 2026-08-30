@@ -34,7 +34,7 @@ define Package/komari-agent-c
 	CATEGORY:=Network
 	SUBMENU:=Monitoring
 	TITLE:=Komari Monitor Agent for OpenWrt
-	DEPENDS:=+libpthread +libopenssl +librt +zlib
+	DEPENDS:=+libpthread +libopenssl +librt +zlib +libcap
 endef
 
 define Package/komari-agent-c/description
@@ -100,10 +100,15 @@ define Package/komari-agent-c/postinst
 [ -n "$${IPKG_INSTROOT}" ] || {
 	# Create a dedicated system user/group so the agent can drop root
 	# privileges via procd_set_param user/group in the init script.
+	# Stock OpenWrt ships busybox only: groupadd/useradd (shadow-utils) do
+	# not exist there, so append directly to /etc/group and /etc/passwd.
+	# The init script falls back to running as root when the user is still
+	# missing.
 	if ! id komari >/dev/null 2>&1; then
-		groupadd -r komari 2>/dev/null || groupadd komari 2>/dev/null || true
-		useradd -r -g komari -d / -s /bin/false komari 2>/dev/null || \
-			useradd -g komari -d / -s /bin/false komari 2>/dev/null || true
+		grep -q '^komari:' /etc/group 2>/dev/null || \
+			echo "komari:x:379:" >> /etc/group
+		grep -q '^komari:' /etc/passwd 2>/dev/null || \
+			echo "komari:x:379:379:Komari Agent:/nonexistent:/bin/false" >> /etc/passwd
 	fi
 	# Grant CAP_NET_RAW so non-root ICMP ping still works after dropping root.
 	setcap cap_net_raw+ep /usr/bin/komari-agent-c 2>/dev/null || true
