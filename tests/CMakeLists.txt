@@ -132,6 +132,11 @@ komari_add_test(test_compress
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_compress.c"
 )
 
+# test_http_client — exercises network/http_client.c against a loopback server
+komari_add_test(test_http_client
+    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_http_client.c"
+)
+
 # test_update — exercises update.c version comparison (pure function, no deps)
 komari_add_test(test_update
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_update.c"

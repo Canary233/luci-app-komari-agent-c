@@ -12,14 +12,6 @@
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#include <openssl/opensslv.h>
 
 #include "report.h"
 #include "monitoring.h"
@@ -30,10 +22,8 @@
 #include "gpu.h"
 #include "cJSON.h"
 #include "jsonrpc.h"
+#include "http_client.h"
 #include "paths.h"
-
-/* Connect/send/recv timeout for HTTP requests (MIN-34: extracted magic number). */
-#define HTTP_CONNECT_TIMEOUT_SEC 10
 
 /* Escape special characters in a string for safe inclusion in a JSON string literal.
  * Conforms to RFC 8259 §7: escapes ", \, and control characters (0x00-0x1F)
@@ -132,35 +122,6 @@ static int url_encode(const char *src, char *dst, size_t dst_len) {
     }
     dst[j] = '\0';
     return (int)j;
-}
-
-/* Send the entire buffer over the connected socket or TLS stream.
- * send(2) and SSL_write may return fewer bytes than requested (partial
- * write), so loop until all bytes are flushed. Retries on EINTR for
- * plain TCP sockets; SSL failures are treated as fatal since SSL_get_error
- * based retry logic is handled by OpenSSL internals for non-blocking mode.
- *
- * @param ssl  SSL object (NULL for plain TCP)
- * @param fd   Socket file descriptor (used when ssl is NULL)
- * @param data Buffer to send
- * @param len  Number of bytes to send
- * @return 0 on success, -1 on failure */
-static int send_full(SSL *ssl, int fd, const char *data, size_t len) {
-    size_t sent = 0;
-    while (sent < len) {
-        int n;
-        if (ssl) {
-            n = SSL_write(ssl, data + sent, (int)(len - sent));
-        } else {
-            n = send(fd, data + sent, len - sent, 0);
-        }
-        if (n <= 0) {
-            if (errno == EINTR) continue;  /* Retry on signal interruption */
-            return -1;
-        }
-        sent += (size_t)n;
-    }
-    return 0;
 }
 
 /* One sample of all metrics used by the periodic report payload. Collected
@@ -476,285 +437,28 @@ int report_generate_basic_info_v2(const agent_config_t *config, char *buf, size_
     return offset;
 }
 
-/* Perform an HTTP POST request with optional extra headers, supporting HTTPS.
- * Returns 0 when the server responds with HTTP 200, -1 otherwise. */
-static int http_post_with_headers(const char *url, const char *payload, int ignore_cert,
-                                   const char *extra_headers) {
-    if (!url || !payload) return -1;
-    
-    /* Parse URL */
-    char scheme[16] = "http";
-    char host[256] = "";
-    int port = 80;
-    char path[512] = "/";
-    
-    const char *p = url;
-    
-    /* Parse scheme */
-    const char *scheme_end = strstr(url, "://");
-    if (scheme_end) {
-        size_t scheme_len = scheme_end - url;
-        if (scheme_len >= sizeof(scheme)) scheme_len = sizeof(scheme) - 1;
-        strncpy(scheme, url, scheme_len);
-        scheme[scheme_len] = '\0';
-        p = scheme_end + 3;
-    }
-    
-    if (strcmp(scheme, "https") == 0) {
-        port = 443;
-    }
-    
-    /* Parse host:port/path */
-    const char *path_start = strchr(p, '/');
-    if (path_start) {
-        size_t host_len = path_start - p;
-        if (host_len >= sizeof(host)) host_len = sizeof(host) - 1;
-        strncpy(host, p, host_len);
-        host[host_len] = '\0';
-        strncpy(path, path_start, sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
-    } else {
-        strncpy(host, p, sizeof(host) - 1);
-        host[sizeof(host) - 1] = '\0';
-    }
-    
-    /* Parse port with validation: atoi gives no error indication, so use strtol
-     * and verify the value is in the valid port range [1, 65535]. On invalid
-     * input, keep the scheme default port (80 for http, 443 for https).
-     *
-     * Bracketed IPv6 literals ([2001:db8::1]:443) are handled by taking the
-     * port separator as the colon AFTER the closing bracket and stripping the
-     * brackets, since getaddrinfo() and SNI expect the bare address. */
-    char *bracket_close = strchr(host, ']');
-    if (bracket_close) {
-        char *colon = strchr(bracket_close, ':');
-        *bracket_close = '\0';
-        memmove(host, host + 1, strlen(host + 1) + 1);
-        if (colon) {
-            char *endptr = NULL;
-            long parsed_port = strtol(colon + 1, &endptr, 10);
-            if (endptr != colon + 1 && *endptr == '\0' &&
-                parsed_port >= 1 && parsed_port <= 65535) {
-                port = (int)parsed_port;
-            }
-        }
-    } else {
-        char *colon = strchr(host, ':');
-        if (colon) {
-            *colon = '\0';
-            char *endptr = NULL;
-            long parsed_port = strtol(colon + 1, &endptr, 10);
-            if (endptr != colon + 1 && *endptr == '\0' &&
-                parsed_port >= 1 && parsed_port <= 65535) {
-                port = (int)parsed_port;
-            }
-        }
-    }
-    
-    /* DNS resolution: iterate through all addresses for IPv4/IPv6 support */
-    char port_str[16];
-    int port_n = snprintf(port_str, sizeof(port_str), "%d", port);
-    if (port_n < 0 || (size_t)port_n >= sizeof(port_str)) {
-        return -1;
-    }
-
-    struct addrinfo hints, *res, *rp;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    if (getaddrinfo(host, port_str, &hints, &res) != 0) {
-        return -1;
-    }
-
-    int fd = -1;
-    for (rp = res; rp != NULL; rp = rp->ai_next) {
-        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (fd < 0) continue;
-
-        /* Set timeout */
-        struct timeval tv;
-        tv.tv_sec = HTTP_CONNECT_TIMEOUT_SEC;
-        tv.tv_usec = 0;
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            break;  /* Success */
-        }
-
-        close(fd);
-        fd = -1;
-    }
-
-    freeaddrinfo(res);
-
-    if (fd < 0) {
-        return -1;
-    }
-    
-    SSL *ssl = NULL;
-    SSL_CTX *ssl_ctx = NULL;
-    
-    /* TLS connection */
-    if (strcmp(scheme, "https") == 0) {
-        /* The project requires OpenSSL >= 1.1.0, so TLS_client_method() is
-         * always available. */
-        ssl_ctx = SSL_CTX_new(TLS_client_method());
-        if (!ssl_ctx) {
-            close(fd);
-            return -1;
-        }
-        
-        /*
-         * Mirror the Go reference implementation (see .komari-agent-main/
-         * server/websocket.go newWSDialer): a tls.Config verifies the
-         * peer by default; only set InsecureSkipVerify when ignore_cert
-         * is explicitly requested. Without this, MITM attackers can
-         * present any certificate and the handshake still succeeds.
-         */
-        if (ignore_cert) {
-            SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL);
-        } else {
-            /* Enable certificate verification by default (mirrors Go
-             * tls.Config default). Load the system CA store so chain
-             * verification can succeed, then require peer verification. */
-            SSL_CTX_set_default_verify_paths(ssl_ctx);
-            SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);
-        }
-
-        ssl = SSL_new(ssl_ctx);
-        if (!ssl) {
-            SSL_CTX_free(ssl_ctx);
-            close(fd);
-            return -1;
-        }
-        
-        SSL_set_fd(ssl, fd);
-        SSL_set_tlsext_host_name(ssl, host);
-        /*
-         * Verify hostname against certificate (mirrors Go
-         * tls.Config.ServerName). SSL_set1_host is available in
-         * OpenSSL 1.0.2+; for older builds we fall back to
-         * SSL_VERIFY_PEER chain-only verification.
-         */
-#if OPENSSL_VERSION_NUMBER >= 0x10002000L
-        if (!ignore_cert) {
-            SSL_set1_host(ssl, host);
-        }
-#else
-        /* Fallback: rely on SSL_CTX_set_verify with SSL_VERIFY_PEER only */
-#endif
-
-        if (SSL_connect(ssl) <= 0) {
-            SSL_free(ssl);
-            SSL_CTX_free(ssl_ctx);
-            close(fd);
-            return -1;
-        }
-    }
-
-    /* Build HTTP request. The payload can be large (up to 64 KiB for a task
-     * result), so size the request buffer dynamically instead of using a
-     * fixed stack array. */
-    size_t request_cap = strlen(payload) + 4096;
-    char *request = malloc(request_cap);
-    if (!request) {
-        if (ssl) SSL_free(ssl);
-        if (ssl_ctx) SSL_CTX_free(ssl_ctx);
-        close(fd);
-        return -1;
-    }
-    int req_len;
-    if (extra_headers && extra_headers[0] != '\0') {
-        req_len = snprintf(request, request_cap,
-            "POST %s HTTP/1.1\r\n"
-            "Host: %s\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: %zu\r\n"
-            "Connection: close\r\n"
-            "%s"
-            "\r\n"
-            "%s",
-            path, host, strlen(payload), extra_headers, payload);
-    } else {
-        req_len = snprintf(request, request_cap,
-            "POST %s HTTP/1.1\r\n"
-            "Host: %s\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: %zu\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "%s",
-            path, host, strlen(payload), payload);
-    }
-
-    /* Check for snprintf truncation or encoding error */
-    if (req_len < 0 || (size_t)req_len >= request_cap) {
-        free(request);
-        if (ssl) SSL_free(ssl);
-        if (ssl_ctx) SSL_CTX_free(ssl_ctx);
-        close(fd);
-        return -1;
-    }
-
-    /* Send the entire request, handling partial writes and EINTR. */
-    if (send_full(ssl, fd, request, (size_t)req_len) != 0) {
-        free(request);
-        if (ssl) SSL_free(ssl);
-        if (ssl_ctx) SSL_CTX_free(ssl_ctx);
-        close(fd);
-        return -1;
-    }
-    free(request);
-    
-    /* Read the response. Loop until the header terminator arrives (or the
-     * buffer is full / the socket times out) so a status line split across
-     * TCP segments or TLS records is not mistaken for a failure. */
-    char response[1024];
-    int recv_len = 0;
-    while (recv_len < (int)sizeof(response) - 1) {
-        int n;
-        if (ssl) {
-            n = SSL_read(ssl, response + recv_len, (int)sizeof(response) - 1 - recv_len);
-        } else {
-            n = recv(fd, response + recv_len, sizeof(response) - 1 - (size_t)recv_len, 0);
-        }
-        if (n <= 0) break;
-        recv_len += n;
-        response[recv_len] = '\0';
-        if (strstr(response, "\r\n\r\n") != NULL) break;
-    }
-    
-    int ret = 0;
-    if (recv_len > 0) {
-        /* Check HTTP status code at the start of the response. Using strncmp
-         * avoids matching "HTTP/1.1 200" inside the response body. */
-        if (strncmp(response, "HTTP/1.1 200", 12) == 0 ||
-            strncmp(response, "HTTP/1.0 200", 12) == 0) {
-            ret = 0;
-        } else {
-            ret = -1;
-        }
-    } else {
-        ret = -1;
-    }
-    
-    /* Cleanup resources */
-    if (ssl) {
-        SSL_shutdown(ssl);
-        SSL_free(ssl);
-    }
-    if (ssl_ctx) SSL_CTX_free(ssl_ctx);
-    close(fd);
-    
-    return ret;
+/* Shared HTTP POST helper: sends payload to url and returns the HTTP
+ * status code, or 0 on transport failure. Used by the task/ping result
+ * uploaders which only care about the status code. */
+static int http_post_status(const agent_config_t *config, const char *url,
+                            const char *payload, const char *extra_headers) {
+    http_client_request_t req;
+    http_client_response_t resp;
+    memset(&req, 0, sizeof(req));
+    memset(&resp, 0, sizeof(resp));
+    req.url = url;
+    req.body = payload;
+    req.ignore_cert = config->ignore_unsafe_cert;
+    req.extra_headers = (extra_headers && extra_headers[0]) ? extra_headers : NULL;
+    if (http_client_request(&req, &resp) != 0) return 0;
+    int status = resp.status;
+    http_client_response_free(&resp);
+    return status;
 }
 
-/* Thin wrapper around http_post_with_headers for callers that do not need
- * custom headers. Forwards the same arguments with extra_headers=NULL. */
-static int http_post(const char *url, const char *payload, int ignore_cert) {
-    return http_post_with_headers(url, payload, ignore_cert, NULL);
+/* Go-style success range: any 2xx counts (mirrors postV2RPC). */
+static int http_status_ok(int status) {
+    return status >= 200 && status < 300;
 }
 
 int report_upload_task_result(const agent_config_t *config,
@@ -845,10 +549,10 @@ int report_upload_task_result(const agent_config_t *config,
         }
     }
 
-    int ret = http_post_with_headers(url, payload, config->ignore_unsafe_cert,
-                                     headers[0] != '\0' ? headers : NULL);
+    int ok = http_status_ok(http_post_status(config, url, payload,
+                                             headers[0] != '\0' ? headers : NULL));
     free(payload);
-    return ret;
+    return ok ? 0 : -1;
 }
 
 int report_upload_ping_result(const agent_config_t *config,
@@ -906,8 +610,9 @@ int report_upload_ping_result(const agent_config_t *config,
         }
     }
 
-    return http_post_with_headers(url, payload, config->ignore_unsafe_cert,
-                                   headers[0] != '\0' ? headers : NULL);
+    return http_status_ok(http_post_status(config, url, payload,
+                                           headers[0] != '\0' ? headers : NULL))
+               ? 0 : -1;
 }
 
 void report_write_status_file(const agent_config_t *config,

@@ -11,22 +11,12 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <time.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#include <openssl/opensslv.h>
 
 #include "autodiscovery.h"
 #include "utils.h"
 #include "logger.h"
 #include "cJSON.h"
+#include "http_client.h"
 
 /* HTTP response buffer size */
 #define HTTP_RESPONSE_BUF_SIZE 8192
@@ -38,30 +28,6 @@
 
 /* Connect/send/recv timeout for HTTP requests (MIN-34: extracted magic number). */
 #define HTTP_CONNECT_TIMEOUT_SEC 10
-
-/**
- * Extract the body from an HTTP response (skip headers)
- *
- * @param response Complete HTTP response string
- * @return Pointer to the start of the body, or NULL if separator not found
- */
-static const char *find_http_body(const char *response) {
-    if (!response) return NULL;
-
-    /* HTTP headers and body are separated by \r\n\r\n */
-    const char *body = strstr(response, "\r\n\r\n");
-    if (body) {
-        return body + 4;
-    }
-
-    /* Compatible with \n\n only case */
-    body = strstr(response, "\n\n");
-    if (body) {
-        return body + 2;
-    }
-
-    return NULL;
-}
 
 /* URL-encode a string for safe inclusion in a URL query parameter value.
  * Encodes all characters except unreserved characters (A-Z, a-z, 0-9, -_~.)
@@ -95,361 +61,6 @@ static int url_encode(const char *src, char *dst, size_t dst_len) {
     }
     dst[j] = '\0';
     return (int)j;
-}
-
-/* Send the entire buffer over the connected socket or TLS stream.
- * send(2) and SSL_write may return fewer bytes than requested (partial
- * write), so loop until all bytes are flushed. Retries on EINTR for
- * plain TCP sockets; SSL failures are treated as fatal since SSL_get_error
- * based retry logic is handled by OpenSSL internals for non-blocking mode.
- *
- * @param ssl  SSL object (NULL for plain TCP)
- * @param fd   Socket file descriptor (used when ssl is NULL)
- * @param data Buffer to send
- * @param len  Number of bytes to send
- * @return 0 on success, -1 on failure */
-static int send_full(SSL *ssl, int fd, const char *data, size_t len) {
-    size_t sent = 0;
-    while (sent < len) {
-        int n;
-        if (ssl) {
-            n = SSL_write(ssl, data + sent, (int)(len - sent));
-        } else {
-            n = send(fd, data + sent, len - sent, 0);
-        }
-        if (n <= 0) {
-            if (errno == EINTR) continue;  /* Retry on signal interruption */
-            return -1;
-        }
-        sent += (size_t)n;
-    }
-    return 0;
-}
-
-/**
- * Send an HTTP POST request and get the response body
- *
- * @param url           Complete URL
- * @param payload       Request body
- * @param ignore_cert   Whether to ignore certificate validation (HTTPS)
- * @param extra_headers Additional request headers (can be NULL)
- * @param response_buf  Response body output buffer
- * @param response_len  Buffer length
- * @return 0 on success, -1 on failure
- */
-static int http_post_get_body(const char *url,
-                               const char *payload,
-                               int ignore_cert,
-                               const char *extra_headers,
-                               char *response_buf,
-                               size_t response_len) {
-    if (!url || !payload || !response_buf || response_len == 0) return -1;
-
-    char scheme[URL_SCHEME_LEN] = "http";
-    char host[URL_HOST_LEN] = "";
-    int port = 80;
-    char path[URL_PATH_LEN] = "/";
-
-    const char *p = url;
-
-    /* Parse scheme */
-    const char *scheme_end = strstr(url, "://");
-    if (scheme_end) {
-        size_t scheme_len = scheme_end - url;
-        if (scheme_len >= sizeof(scheme)) scheme_len = sizeof(scheme) - 1;
-        strncpy(scheme, url, scheme_len);
-        scheme[scheme_len] = '\0';
-        p = scheme_end + 3;
-    }
-
-    if (strcmp(scheme, "https") == 0) {
-        port = 443;
-    }
-
-    /* Parse host:port/path */
-    const char *path_start = strchr(p, '/');
-    if (path_start) {
-        size_t host_len = path_start - p;
-        if (host_len >= sizeof(host)) host_len = sizeof(host) - 1;
-        strncpy(host, p, host_len);
-        host[host_len] = '\0';
-        strncpy(path, path_start, sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
-    } else {
-        strncpy(host, p, sizeof(host) - 1);
-        host[sizeof(host) - 1] = '\0';
-    }
-
-    /* Parse port. For IPv6 URLs the host is bracketed, e.g. [::1]:443.
-     * strchr(host, ':') would match the first colon inside the brackets and
-     * truncate the host to "["; instead look for ']' first and search for
-     * ':' only after it. For plain IPv4/hostname the bracket lookup fails
-     * and we fall back to strrchr which finds the last ':' (the port
-     * separator). */
-    char *colon = NULL;
-    char *bracket = strchr(host, ']');
-    if (bracket) {
-        colon = strchr(bracket + 1, ':');
-    } else {
-        colon = strrchr(host, ':');
-    }
-    if (colon) {
-        *colon = '\0';
-        port = atoi(colon + 1);
-    }
-
-    /* DNS resolution: iterate through all addresses for IPv4/IPv6 support */
-    char port_str[16];
-    int port_n = snprintf(port_str, sizeof(port_str), "%d", port);
-    if (port_n < 0 || (size_t)port_n >= sizeof(port_str)) {
-        KOMARI_LOG_ERROR("Auto-discovery: Port string truncation");
-        return -1;
-    }
-
-    struct addrinfo hints, *res, *rp;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    if (getaddrinfo(host, port_str, &hints, &res) != 0) {
-        KOMARI_LOG_ERROR("Auto-discovery: DNS resolution failed host=%s", host);
-        return -1;
-    }
-
-    int fd = -1;
-    for (rp = res; rp != NULL; rp = rp->ai_next) {
-        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (fd < 0) continue;
-
-        /* Set response-phase timeouts. Note these do NOT bound connect():
-         * that is handled with a non-blocking connect + poll() deadline
-         * below, since SO_SNDTIMEO/SO_RCVTIMEO do not apply to connect()
-         * and a blocking connect against an unresponsive endpoint would
-         * otherwise hang for the kernel TCP timeout (~2 minutes with
-         * default tcp_syn_retries). */
-        struct timeval tv;
-        tv.tv_sec = HTTP_CONNECT_TIMEOUT_SEC;
-        tv.tv_usec = 0;
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-        int flags = fcntl(fd, F_GETFL, 0);
-        if (flags >= 0) {
-            fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-        }
-
-        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            if (flags >= 0) {
-                fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-            }
-            break;  /* Success */
-        }
-
-        if (errno == EINPROGRESS) {
-            int connected = 0;
-            time_t deadline = time(NULL) + HTTP_CONNECT_TIMEOUT_SEC;
-            for (;;) {
-                time_t now = time(NULL);
-                if (now >= deadline) break;
-                struct pollfd pfd = {.fd = fd, .events = POLLOUT};
-                int pr = poll(&pfd, 1, (int)((deadline - now) * 1000));
-                if (pr < 0 && errno == EINTR) continue;
-                if (pr <= 0) break;
-                int so_error = 0;
-                socklen_t so_len = sizeof(so_error);
-                getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &so_len);
-                if (so_error == 0) connected = 1;
-                break;
-            }
-            /* Restore blocking mode: the response read path below relies on
-             * SO_RCVTIMEO-bounded blocking recv()/SSL_read(). */
-            if (flags >= 0) {
-                fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-            }
-            if (connected) {
-                break;
-            }
-        }
-
-        close(fd);
-        fd = -1;
-    }
-
-    freeaddrinfo(res);
-
-    if (fd < 0) {
-        KOMARI_LOG_ERROR("Auto-discovery: Connection failed host=%s port=%d", host, port);
-        return -1;
-    }
-
-    SSL *ssl = NULL;
-    SSL_CTX *ssl_ctx = NULL;
-
-    /* TLS connection */
-    if (strcmp(scheme, "https") == 0) {
-        /* The project requires OpenSSL >= 1.1.0, so TLS_client_method() is
-         * always available. */
-        ssl_ctx = SSL_CTX_new(TLS_client_method());
-        if (!ssl_ctx) {
-            close(fd);
-            KOMARI_LOG_ERROR("Auto-discovery: Failed to create SSL_CTX");
-            return -1;
-        }
-
-        /*
-         * Mirror the Go reference implementation (see .komari-agent-main/
-         * server/websocket.go newWSDialer): a tls.Config verifies the
-         * peer by default; only set InsecureSkipVerify when ignore_cert
-         * is explicitly requested. Without this, MITM attackers can
-         * present any certificate and the handshake still succeeds.
-         */
-        if (ignore_cert) {
-            SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL);
-        } else {
-            /* Enable certificate verification by default (mirrors Go
-             * tls.Config default). Load the system CA store so chain
-             * verification can succeed, then require peer verification. */
-            SSL_CTX_set_default_verify_paths(ssl_ctx);
-            SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);
-        }
-
-        ssl = SSL_new(ssl_ctx);
-        if (!ssl) {
-            SSL_CTX_free(ssl_ctx);
-            close(fd);
-            KOMARI_LOG_ERROR("Auto-discovery: Failed to create SSL object");
-            return -1;
-        }
-
-        SSL_set_fd(ssl, fd);
-        SSL_set_tlsext_host_name(ssl, host);
-        /*
-         * Verify hostname against certificate (mirrors Go
-         * tls.Config.ServerName). SSL_set1_host is available in
-         * OpenSSL 1.0.2+; for older builds we fall back to
-         * SSL_VERIFY_PEER chain-only verification.
-         */
-#if OPENSSL_VERSION_NUMBER >= 0x10002000L
-        if (!ignore_cert) {
-            SSL_set1_host(ssl, host);
-        }
-#else
-        /* Fallback: rely on SSL_CTX_set_verify with SSL_VERIFY_PEER only */
-#endif
-
-        if (SSL_connect(ssl) <= 0) {
-            SSL_free(ssl);
-            SSL_CTX_free(ssl_ctx);
-            close(fd);
-            KOMARI_LOG_ERROR("Auto-discovery: SSL handshake failed");
-            return -1;
-        }
-    }
-
-    /* Build HTTP request */
-    char request[4096];
-    int req_len;
-    if (extra_headers && extra_headers[0] != '\0') {
-        req_len = snprintf(request, sizeof(request),
-            "POST %s HTTP/1.1\r\n"
-            "Host: %s\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: %zu\r\n"
-            "Connection: close\r\n"
-            "%s"
-            "\r\n"
-            "%s",
-            path, host, strlen(payload), extra_headers, payload);
-    } else {
-        req_len = snprintf(request, sizeof(request),
-            "POST %s HTTP/1.1\r\n"
-            "Host: %s\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: %zu\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "%s",
-            path, host, strlen(payload), payload);
-    }
-
-    if (req_len < 0 || (size_t)req_len >= sizeof(request)) {
-        if (ssl) SSL_free(ssl);
-        if (ssl_ctx) SSL_CTX_free(ssl_ctx);
-        close(fd);
-        KOMARI_LOG_ERROR("Auto-discovery: HTTP request too long");
-        return -1;
-    }
-
-    /* Send the entire request, handling partial writes and EINTR.
-     * send(2) and SSL_write may return fewer bytes than requested, so loop
-     * until all bytes are flushed. */
-    if (send_full(ssl, fd, request, (size_t)req_len) != 0) {
-        if (ssl) SSL_free(ssl);
-        if (ssl_ctx) SSL_CTX_free(ssl_ctx);
-        close(fd);
-        KOMARI_LOG_ERROR("Auto-discovery: Failed to send HTTP request");
-        return -1;
-    }
-
-    /* Read response in a loop until connection closes or buffer is full */
-    char raw_buf[HTTP_RESPONSE_BUF_SIZE];
-    size_t total = 0;
-    int n = 0;
-
-    while (total < sizeof(raw_buf) - 1) {
-        if (ssl) {
-            n = SSL_read(ssl, raw_buf + total, sizeof(raw_buf) - 1 - total);
-        } else {
-            n = recv(fd, raw_buf + total, sizeof(raw_buf) - 1 - total, 0);
-        }
-
-        if (n > 0) {
-            total += (size_t)n;
-        } else if (n < 0 && !ssl && errno == EINTR) {
-            /* Signal interruption (the agent forks regularly): retry instead
-             * of treating it as end-of-stream, which truncated the response
-             * mid-headers and failed registration spuriously. */
-            continue;
-        } else {
-            break;
-        }
-    }
-    raw_buf[total] = '\0';
-
-    /* Cleanup resources */
-    if (ssl) {
-        SSL_shutdown(ssl);
-        SSL_free(ssl);
-    }
-    if (ssl_ctx) SSL_CTX_free(ssl_ctx);
-    close(fd);
-
-    if (total == 0) {
-        KOMARI_LOG_ERROR("Auto-discovery: HTTP response is empty");
-        return -1;
-    }
-
-    /* Validate HTTP status code by checking the start of the response only.
-     * Using strstr would match the status line anywhere in the response
-     * (including the body), so a 404/500 error page that happens to quote
-     * "HTTP/1.1 200" would pass the check incorrectly. */
-    if (strncmp(raw_buf, "HTTP/1.1 200", 12) != 0 &&
-        strncmp(raw_buf, "HTTP/1.0 200", 12) != 0) {
-        KOMARI_LOG_ERROR("Auto-discovery: HTTP status code is not 200");
-        return -1;
-    }
-
-    /* Extract response body */
-    const char *body = find_http_body(raw_buf);
-    if (!body) {
-        KOMARI_LOG_ERROR("Auto-discovery: Cannot locate HTTP response body");
-        return -1;
-    }
-
-    strncpy(response_buf, body, response_len - 1);
-    response_buf[response_len - 1] = '\0';
-
-    return 0;
 }
 
 int autodiscovery_get_file_path(char *path, size_t path_len) {
@@ -637,13 +248,24 @@ int autodiscovery_register(const char *endpoint,
         return -1;
     }
 
-    /* Send POST request (empty body) */
+    /* Send POST request (empty body) via the shared HTTP client */
     char response[HTTP_RESPONSE_BUF_SIZE];
-    if (http_post_get_body(url, "", 0, auth_header,
-                            response, sizeof(response)) != 0) {
+    http_client_request_t req;
+    http_client_response_t resp;
+    memset(&req, 0, sizeof(req));
+    memset(&resp, 0, sizeof(resp));
+    req.url = url;
+    req.body = "";
+    req.extra_headers = auth_header;
+    req.response_buf = response;
+    req.response_len = sizeof(response);
+    if (http_client_request(&req, &resp) != 0 ||
+        resp.status < 200 || resp.status >= 300) {
         KOMARI_LOG_ERROR("Auto-discovery: Registration request failed url=%s", url);
+        http_client_response_free(&resp);
         return -1;
     }
+    http_client_response_free(&resp);
 
     /* Parse response JSON, extract uuid and token */
     cJSON *root = cJSON_Parse(response);

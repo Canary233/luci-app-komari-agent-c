@@ -199,6 +199,149 @@ void test_compress_is_available_returns_one(void) {
     TEST_ASSERT_EQUAL_INT(1, compress_is_available());
 }
 
+/* ====== raw DEFLATE streams (permessage-deflate support) ====== */
+
+/* Round-trip: deflate produces the 00 00 FF FF sync-flush tail; stripping
+ * it and re-appending via inflate(append_pmd_tail=1) restores the input. */
+void test_compress_raw_roundtrip(void) {
+    const char *input = "permessage-deflate payload with enough text to compress";
+    size_t input_len = strlen(input);
+
+    compress_raw_t defl;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_deflate_init(&defl));
+
+    char *comp = NULL;
+    size_t comp_len = 0;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_deflate(&defl, input, input_len,
+                                                  &comp, &comp_len));
+    TEST_ASSERT_NOT_NULL(comp);
+    TEST_ASSERT_TRUE(comp_len >= 4);
+    TEST_ASSERT_EQUAL_UINT8(0x00, (unsigned char)comp[comp_len - 4]);
+    TEST_ASSERT_EQUAL_UINT8(0x00, (unsigned char)comp[comp_len - 3]);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, (unsigned char)comp[comp_len - 2]);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, (unsigned char)comp[comp_len - 1]);
+    compress_raw_deflate_end(&defl);
+
+    compress_raw_t infl;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_inflate_init(&infl));
+    char *plain = NULL;
+    size_t plain_len = 0;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_inflate(&infl, comp, comp_len - 4,
+                                                  1, 0, &plain, &plain_len));
+    TEST_ASSERT_NOT_NULL(plain);
+    TEST_ASSERT_EQUAL_size_t(input_len, plain_len);
+    TEST_ASSERT_EQUAL_MEMORY(input, plain, input_len);
+
+    free(comp);
+    free(plain);
+    compress_raw_inflate_end(&infl);
+}
+
+/* Context takeover: two messages through the same context must inflate
+ * correctly when fed through the same inflate context. */
+void test_compress_raw_context_takeover(void) {
+    const char *msg1 = "first message repeated data aaaa bbbb cccc dddd";
+    const char *msg2 = "second message similar structure eeee ffff gggg";
+
+    compress_raw_t defl;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_deflate_init(&defl));
+    char *c1 = NULL, *c2 = NULL;
+    size_t c1_len = 0, c2_len = 0;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_deflate(&defl, msg1, strlen(msg1), &c1, &c1_len));
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_deflate(&defl, msg2, strlen(msg2), &c2, &c2_len));
+    compress_raw_deflate_end(&defl);
+
+    compress_raw_t infl;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_inflate_init(&infl));
+    char *p1 = NULL, *p2 = NULL;
+    size_t p1_len = 0, p2_len = 0;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_inflate(&infl, c1, c1_len - 4, 1, 0,
+                                                  &p1, &p1_len));
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_inflate(&infl, c2, c2_len - 4, 1, 0,
+                                                  &p2, &p2_len));
+    TEST_ASSERT_EQUAL_size_t(strlen(msg1), p1_len);
+    TEST_ASSERT_EQUAL_MEMORY(msg1, p1, p1_len);
+    TEST_ASSERT_EQUAL_size_t(strlen(msg2), p2_len);
+    TEST_ASSERT_EQUAL_MEMORY(msg2, p2, p2_len);
+
+    free(c1); free(c2); free(p1); free(p2);
+    compress_raw_inflate_end(&infl);
+}
+
+/* An empty message deflates to zero stripped bytes and inflates back to
+ * empty via the tail marker alone. */
+void test_compress_raw_empty_message(void) {
+    compress_raw_t defl;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_deflate_init(&defl));
+    char *comp = NULL;
+    size_t comp_len = 0;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_deflate(&defl, "", 0, &comp, &comp_len));
+    compress_raw_deflate_end(&defl);
+    TEST_ASSERT_NOT_NULL(comp);
+
+    compress_raw_t infl;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_inflate_init(&infl));
+    char *plain = NULL;
+    size_t plain_len = 0;
+    /* comp may be empty (0 bytes) or carry only the sync marker; feeding
+     * the marker-less remainder with append_pmd_tail=1 must yield nothing. */
+    size_t wire_len = comp_len >= 4 ? comp_len - 4 : 0;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_inflate(&infl, comp, wire_len, 1, 0,
+                                                  &plain, &plain_len));
+    TEST_ASSERT_EQUAL_size_t(0, plain_len);
+    free(comp);
+    free(plain);
+    compress_raw_inflate_end(&infl);
+}
+
+/* The per-call max_out cap on inflate must reject oversized expansions. */
+void test_compress_raw_inflate_bomb_guard(void) {
+    size_t bomb_len = 1024 * 1024;
+    char *bomb = malloc(bomb_len);
+    TEST_ASSERT_NOT_NULL(bomb);
+    memset(bomb, 'X', bomb_len);
+
+    compress_raw_t defl;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_deflate_init(&defl));
+    char *comp = NULL;
+    size_t comp_len = 0;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_deflate(&defl, bomb, bomb_len,
+                                                  &comp, &comp_len));
+    compress_raw_deflate_end(&defl);
+    TEST_ASSERT_TRUE(comp_len < bomb_len);
+
+    compress_raw_t infl;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_inflate_init(&infl));
+    char *plain = NULL;
+    size_t plain_len = 0;
+    /* Cap far below the 1 MB expansion; inflate must fail, not allocate. */
+    TEST_ASSERT_EQUAL_INT(-1, compress_raw_inflate(&infl, comp, comp_len - 4,
+                                                   1, 4096, &plain, &plain_len));
+    TEST_ASSERT_NULL(plain);
+    free(comp);
+    free(bomb);
+    compress_raw_inflate_end(&infl);
+}
+
+void test_compress_raw_null_args(void) {
+    compress_raw_t defl;
+    TEST_ASSERT_EQUAL_INT(-1, compress_raw_deflate_init(NULL));
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_deflate_init(&defl));
+    char *out = NULL;
+    size_t out_len = 0;
+    TEST_ASSERT_EQUAL_INT(-1, compress_raw_deflate(NULL, "x", 1, &out, &out_len));
+    TEST_ASSERT_EQUAL_INT(-1, compress_raw_deflate(&defl, "x", 1, NULL, &out_len));
+    compress_raw_deflate_end(&defl);
+
+    compress_raw_t infl;
+    TEST_ASSERT_EQUAL_INT(0, compress_raw_inflate_init(&infl));
+    TEST_ASSERT_EQUAL_INT(-1, compress_raw_inflate(&infl, "x", 1, 0, 0, NULL, &out_len));
+    TEST_ASSERT_EQUAL_INT(-1, compress_raw_inflate(NULL, "x", 1, 0, 0, &out, &out_len));
+    compress_raw_inflate_end(&infl);
+
+    TEST_ASSERT_EQUAL_INT(-1, compress_raw_inflate_init(NULL));
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -220,6 +363,13 @@ int main(void) {
 
     /* Availability */
     RUN_TEST(test_compress_is_available_returns_one);
+
+    /* Raw DEFLATE streams */
+    RUN_TEST(test_compress_raw_roundtrip);
+    RUN_TEST(test_compress_raw_context_takeover);
+    RUN_TEST(test_compress_raw_empty_message);
+    RUN_TEST(test_compress_raw_inflate_bomb_guard);
+    RUN_TEST(test_compress_raw_null_args);
 
     return UNITY_END();
 }
