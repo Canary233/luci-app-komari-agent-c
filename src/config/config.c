@@ -22,11 +22,10 @@
 /* Default values used when configuration validation fails. These mirror the
  * defaults applied by config_init() so that a corrupted or partially loaded
  * configuration can be repaired in place without restarting the agent. */
-#define CONFIG_DEFAULT_INTERVAL          1.0
-#define CONFIG_DEFAULT_MAX_RETRIES       5
+#define CONFIG_DEFAULT_INTERVAL          3.0
+#define CONFIG_DEFAULT_MAX_RETRIES       3
 #define CONFIG_DEFAULT_RECONNECT_INTERVAL 5
-#define CONFIG_DEFAULT_INFO_REPORT_INTERVAL 30
-#define CONFIG_DEFAULT_PROTOCOL_VERSION  PROTOCOL_VERSION_V2
+#define CONFIG_DEFAULT_INFO_REPORT_INTERVAL 5
 
 /* Length of a canonical UUID string (8-4-4-4-12 hex digits with hyphens). */
 #define UUID_LEN 36
@@ -103,23 +102,21 @@ static int parse_endpoint_port(const char *url) {
 
 void config_init(agent_config_t *config) {
     if (!config) return;
-    
+
     memset(config, 0, sizeof(agent_config_t));
-    
-    config->interval = 1.0;
-    config->max_retries = 5;
+
+    config->interval = 3.0;
+    config->max_retries = 3;
     config->reconnect_interval = 5;
-    config->info_report_interval = 30;
+    config->info_report_interval = 5;
     config->month_rotate = 0;
-    config->protocol_version = PROTOCOL_VERSION_V2;
 
     config->disable_auto_update = false;
     config->disable_web_ssh = false;
     config->ignore_unsafe_cert = false;
     config->memory_include_cache = false;
-    config->enable_gpu = false;
+    config->memory_report_raw_used = false;
     config->get_ip_addr_from_nic = false;
-    config->show_warning = false;
     config->disable_compression = false;
 }
 
@@ -185,36 +182,37 @@ static int get_env_int(const char *name, int default_val) {
 
 int config_load_from_env(agent_config_t *config) {
     if (!config) return -1;
-    
+
     get_env_or_empty("AGENT_TOKEN", config->token, sizeof(config->token));
     get_env_or_empty("AGENT_ENDPOINT", config->endpoint, sizeof(config->endpoint));
     get_env_or_empty("AGENT_CUSTOM_DNS", config->custom_dns, sizeof(config->custom_dns));
     get_env_or_empty("AGENT_INCLUDE_NICS", config->include_nics, sizeof(config->include_nics));
     get_env_or_empty("AGENT_EXCLUDE_NICS", config->exclude_nics, sizeof(config->exclude_nics));
     get_env_or_empty("AGENT_INCLUDE_MOUNTPOINTS", config->include_mountpoints, sizeof(config->include_mountpoints));
-    get_env_or_empty("AGENT_CF_ACCESS_CLIENT_ID", config->cf_access_client_id, sizeof(config->cf_access_client_id));
-    get_env_or_empty("AGENT_CF_ACCESS_CLIENT_SECRET", config->cf_access_client_secret, sizeof(config->cf_access_client_secret));
     get_env_or_empty("AGENT_CUSTOM_IPV4", config->custom_ipv4, sizeof(config->custom_ipv4));
     get_env_or_empty("AGENT_CUSTOM_IPV6", config->custom_ipv6, sizeof(config->custom_ipv6));
     get_env_or_empty("AGENT_AUTO_DISCOVERY_KEY", config->auto_discovery_key, sizeof(config->auto_discovery_key));
     get_env_or_empty("AGENT_CONFIG_FILE", config->config_file, sizeof(config->config_file));
-    
+    /* Container environments may mount the host /proc elsewhere; the Go
+     * reference reads this variable without the AGENT_ prefix. */
+    get_env_or_empty("HOST_PROC", config->host_proc, sizeof(config->host_proc));
+    get_env_or_empty("AGENT_PREFER_IP_VERSION", config->prefer_ip_version,
+                     sizeof(config->prefer_ip_version));
+
     config->interval = get_env_double("AGENT_INTERVAL", config->interval);
     config->max_retries = get_env_int("AGENT_MAX_RETRIES", config->max_retries);
     config->reconnect_interval = get_env_int("AGENT_RECONNECT_INTERVAL", config->reconnect_interval);
     config->info_report_interval = get_env_int("AGENT_INFO_REPORT_INTERVAL", config->info_report_interval);
     config->month_rotate = get_env_int("AGENT_MONTH_ROTATE", config->month_rotate);
-    config->protocol_version = get_env_int("AGENT_PROTOCOL_VERSION", config->protocol_version);
-    
+
     config->disable_auto_update = get_env_bool("AGENT_DISABLE_AUTO_UPDATE", config->disable_auto_update);
     config->disable_web_ssh = get_env_bool("AGENT_DISABLE_WEB_SSH", config->disable_web_ssh);
     config->ignore_unsafe_cert = get_env_bool("AGENT_IGNORE_UNSAFE_CERT", config->ignore_unsafe_cert);
     config->memory_include_cache = get_env_bool("AGENT_MEMORY_INCLUDE_CACHE", config->memory_include_cache);
-    config->enable_gpu = get_env_bool("AGENT_ENABLE_GPU", config->enable_gpu);
+    config->memory_report_raw_used = get_env_bool("AGENT_MEMORY_REPORT_RAW_USED", config->memory_report_raw_used);
     config->get_ip_addr_from_nic = get_env_bool("AGENT_GET_IP_ADDR_FROM_NIC", config->get_ip_addr_from_nic);
-    config->show_warning = get_env_bool("AGENT_SHOW_WARNING", config->show_warning);
     config->disable_compression = get_env_bool("AGENT_DISABLE_COMPRESSION", config->disable_compression);
-    
+
     return 0;
 }
 
@@ -298,14 +296,6 @@ int config_load_from_file(agent_config_t *config, const char *path) {
         utils_set_string(config->include_mountpoints, sizeof(config->include_mountpoints), item->valuestring);
     }
 
-    if ((item = cJSON_GetObjectItem(root, "cf_access_client_id")) && item->valuestring) {
-        utils_set_string(config->cf_access_client_id, sizeof(config->cf_access_client_id), item->valuestring);
-    }
-
-    if ((item = cJSON_GetObjectItem(root, "cf_access_client_secret")) && item->valuestring) {
-        utils_set_string(config->cf_access_client_secret, sizeof(config->cf_access_client_secret), item->valuestring);
-    }
-
     if ((item = cJSON_GetObjectItem(root, "custom_ipv4")) && item->valuestring) {
         utils_set_string(config->custom_ipv4, sizeof(config->custom_ipv4), item->valuestring);
     }
@@ -316,6 +306,14 @@ int config_load_from_file(agent_config_t *config, const char *path) {
 
     if ((item = cJSON_GetObjectItem(root, "auto_discovery_key")) && item->valuestring) {
         utils_set_string(config->auto_discovery_key, sizeof(config->auto_discovery_key), item->valuestring);
+    }
+
+    if ((item = cJSON_GetObjectItem(root, "host_proc")) && item->valuestring) {
+        utils_set_string(config->host_proc, sizeof(config->host_proc), item->valuestring);
+    }
+
+    if ((item = cJSON_GetObjectItem(root, "prefer_ip_version")) && item->valuestring) {
+        utils_set_string(config->prefer_ip_version, sizeof(config->prefer_ip_version), item->valuestring);
     }
 
     if ((item = cJSON_GetObjectItem(root, "interval")) && item->valuedouble > 0) {
@@ -338,10 +336,6 @@ int config_load_from_file(agent_config_t *config, const char *path) {
         config->month_rotate = item->valueint;
     }
 
-    if ((item = cJSON_GetObjectItem(root, "protocol_version")) && item->valueint > 0) {
-        config->protocol_version = item->valueint;
-    }
-    
     if ((item = cJSON_GetObjectItem(root, "disable_auto_update"))) {
         if (cJSON_IsBool(item)) {
             config->disable_auto_update = cJSON_IsTrue(item);
@@ -374,14 +368,14 @@ int config_load_from_file(agent_config_t *config, const char *path) {
         }
     }
 
-    if ((item = cJSON_GetObjectItem(root, "enable_gpu"))) {
+    if ((item = cJSON_GetObjectItem(root, "memory_report_raw_used"))) {
         if (cJSON_IsBool(item)) {
-            config->enable_gpu = cJSON_IsTrue(item);
+            config->memory_report_raw_used = cJSON_IsTrue(item);
         } else if (cJSON_IsString(item)) {
-            config->enable_gpu = (strcasecmp(item->valuestring, "true") == 0);
+            config->memory_report_raw_used = (strcasecmp(item->valuestring, "true") == 0);
         }
     }
-    
+
     if ((item = cJSON_GetObjectItem(root, "get_ip_addr_from_nic"))) {
         if (cJSON_IsBool(item)) {
             config->get_ip_addr_from_nic = cJSON_IsTrue(item);
@@ -470,16 +464,28 @@ int config_parse_uci_line(agent_config_t *config, const char *raw_line) {
         config->info_report_interval = atoi(value);
     } else if (strcmp(key, "month_rotate") == 0) {
         config->month_rotate = atoi(value);
-    } else if (strcmp(key, "protocol_version") == 0) {
-        config->protocol_version = atoi(value);
-    } else if (strcmp(key, "enable_gpu") == 0) {
-        config->enable_gpu = (strcmp(value, "1") == 0 || strcmp(value, "true") == 0);
     } else if (strcmp(key, "disable_compression") == 0) {
         config->disable_compression = (strcmp(value, "1") == 0 || strcmp(value, "true") == 0);
     } else if (strcmp(key, "disable_auto_update") == 0) {
         config->disable_auto_update = (strcmp(value, "1") == 0 || strcmp(value, "true") == 0);
     } else if (strcmp(key, "auto_discovery_key") == 0) {
         utils_set_string(config->auto_discovery_key, sizeof(config->auto_discovery_key), value);
+    } else if (strcmp(key, "include_nics") == 0) {
+        utils_set_string(config->include_nics, sizeof(config->include_nics), value);
+    } else if (strcmp(key, "exclude_nics") == 0) {
+        utils_set_string(config->exclude_nics, sizeof(config->exclude_nics), value);
+    } else if (strcmp(key, "include_mountpoints") == 0) {
+        utils_set_string(config->include_mountpoints, sizeof(config->include_mountpoints), value);
+    } else if (strcmp(key, "custom_ipv4") == 0) {
+        utils_set_string(config->custom_ipv4, sizeof(config->custom_ipv4), value);
+    } else if (strcmp(key, "custom_ipv6") == 0) {
+        utils_set_string(config->custom_ipv6, sizeof(config->custom_ipv6), value);
+    } else if (strcmp(key, "memory_include_cache") == 0) {
+        config->memory_include_cache = (strcmp(value, "1") == 0 || strcmp(value, "true") == 0);
+    } else if (strcmp(key, "memory_report_raw_used") == 0) {
+        config->memory_report_raw_used = (strcmp(value, "1") == 0 || strcmp(value, "true") == 0);
+    } else if (strcmp(key, "prefer_ip_version") == 0) {
+        utils_set_string(config->prefer_ip_version, sizeof(config->prefer_ip_version), value);
     }
 
     return 0;
@@ -619,11 +625,15 @@ int config_validate(agent_config_t *config) {
         config->info_report_interval = CONFIG_DEFAULT_INFO_REPORT_INTERVAL;
     }
 
-    if (config->protocol_version != PROTOCOL_VERSION_V1 &&
-        config->protocol_version != PROTOCOL_VERSION_V2) {
-        KOMARI_LOG_ERROR("Config validation: protocol_version (%d) is not a known version, using default %d",
-                         config->protocol_version, CONFIG_DEFAULT_PROTOCOL_VERSION);
-        config->protocol_version = CONFIG_DEFAULT_PROTOCOL_VERSION;
+    /* Address version preference for panel connections: empty (system
+     * default), "4" or "6" only, mirroring the Go reference validation. */
+    if (config->prefer_ip_version[0] != '\0' &&
+        strcmp(config->prefer_ip_version, "4") != 0 &&
+        strcmp(config->prefer_ip_version, "6") != 0) {
+        KOMARI_LOG_ERROR("Config validation: prefer_ip_version '%s' is invalid "
+                         "(expected 4 or 6), clearing",
+                         config->prefer_ip_version);
+        config->prefer_ip_version[0] = '\0';
     }
 
     return 0;

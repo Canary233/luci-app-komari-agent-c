@@ -43,7 +43,9 @@ void setUp(void) {
     unsetenv("AGENT_DISABLE_WEB_SSH");
     unsetenv("AGENT_IGNORE_UNSAFE_CERT");
     unsetenv("AGENT_MEMORY_INCLUDE_CACHE");
-    unsetenv("AGENT_ENABLE_GPU");
+    unsetenv("AGENT_MEMORY_REPORT_RAW_USED");
+    unsetenv("AGENT_PREFER_IP_VERSION");
+    unsetenv("HOST_PROC");
 }
 
 void tearDown(void) {
@@ -64,7 +66,9 @@ void tearDown(void) {
     unsetenv("AGENT_DISABLE_WEB_SSH");
     unsetenv("AGENT_IGNORE_UNSAFE_CERT");
     unsetenv("AGENT_MEMORY_INCLUDE_CACHE");
-    unsetenv("AGENT_ENABLE_GPU");
+    unsetenv("AGENT_MEMORY_REPORT_RAW_USED");
+    unsetenv("AGENT_PREFER_IP_VERSION");
+    unsetenv("HOST_PROC");
 }
 
 /* Test config_init: verify all fields are correctly initialized to default values */
@@ -73,10 +77,10 @@ void test_config_init_defaults(void) {
     config_init(&config);
 
     /* Verify numeric field default values */
-    TEST_ASSERT_EQUAL_DOUBLE(1.0, config.interval);
-    TEST_ASSERT_EQUAL_INT(5, config.max_retries);
+    TEST_ASSERT_EQUAL_DOUBLE(3.0, config.interval);
+    TEST_ASSERT_EQUAL_INT(3, config.max_retries);
     TEST_ASSERT_EQUAL_INT(5, config.reconnect_interval);
-    TEST_ASSERT_EQUAL_INT(30, config.info_report_interval);
+    TEST_ASSERT_EQUAL_INT(5, config.info_report_interval);
     TEST_ASSERT_EQUAL_INT(0, config.month_rotate);
 
     /* Verify boolean field default values (all false) */
@@ -84,9 +88,8 @@ void test_config_init_defaults(void) {
     TEST_ASSERT_FALSE(config.disable_web_ssh);
     TEST_ASSERT_FALSE(config.ignore_unsafe_cert);
     TEST_ASSERT_FALSE(config.memory_include_cache);
-    TEST_ASSERT_FALSE(config.enable_gpu);
+    TEST_ASSERT_FALSE(config.memory_report_raw_used);
     TEST_ASSERT_FALSE(config.get_ip_addr_from_nic);
-    TEST_ASSERT_FALSE(config.show_warning);
 
     /* Verify string field default values */
     TEST_ASSERT_EQUAL_STRING("", config.token);
@@ -131,7 +134,8 @@ void test_config_load_from_env_numbers_and_bools(void) {
     setenv("AGENT_RECONNECT_INTERVAL", "15", 1);
     setenv("AGENT_INFO_REPORT_INTERVAL", "60", 1);
     setenv("AGENT_DISABLE_WEB_SSH", "true", 1);
-    setenv("AGENT_ENABLE_GPU", "1", 1);
+    setenv("AGENT_MEMORY_REPORT_RAW_USED", "1", 1);
+    setenv("AGENT_PREFER_IP_VERSION", "6", 1);
     setenv("AGENT_MEMORY_INCLUDE_CACHE", "yes", 1);
 
     int ret = config_load_from_env(&config);
@@ -142,8 +146,9 @@ void test_config_load_from_env_numbers_and_bools(void) {
     TEST_ASSERT_EQUAL_INT(15, config.reconnect_interval);
     TEST_ASSERT_EQUAL_INT(60, config.info_report_interval);
     TEST_ASSERT_TRUE(config.disable_web_ssh);
-    TEST_ASSERT_TRUE(config.enable_gpu);
+    TEST_ASSERT_TRUE(config.memory_report_raw_used);
     TEST_ASSERT_TRUE(config.memory_include_cache);
+    TEST_ASSERT_EQUAL_STRING("6", config.prefer_ip_version);
 }
 
 /* Test config_load_from_env: multiple representations of boolean values */
@@ -201,8 +206,8 @@ void test_config_load_from_env_keep_defaults(void) {
     TEST_ASSERT_EQUAL_INT(0, ret);
 
     /* Without environment variables set, default values should remain unchanged */
-    TEST_ASSERT_EQUAL_DOUBLE(1.0, config.interval);
-    TEST_ASSERT_EQUAL_INT(5, config.max_retries);
+    TEST_ASSERT_EQUAL_DOUBLE(3.0, config.interval);
+    TEST_ASSERT_EQUAL_INT(3, config.max_retries);
 }
 
 /* Test config_load_from_env: verify that overlong string values are truncated
@@ -254,7 +259,8 @@ void test_config_load_from_file_basic(void) {
         "\"reconnect_interval\": 20,"
         "\"info_report_interval\": 45,"
         "\"disable_web_ssh\": true,"
-        "\"enable_gpu\": false,"
+        "\"memory_report_raw_used\": true,"
+        "\"prefer_ip_version\": \"4\","
         "\"ignore_unsafe_cert\": true"
         "}";
 
@@ -283,7 +289,8 @@ void test_config_load_from_file_basic(void) {
 
     /* Verify boolean fields */
     TEST_ASSERT_TRUE(config.disable_web_ssh);
-    TEST_ASSERT_FALSE(config.enable_gpu);
+    TEST_ASSERT_TRUE(config.memory_report_raw_used);
+    TEST_ASSERT_EQUAL_STRING("4", config.prefer_ip_version);
     TEST_ASSERT_TRUE(config.ignore_unsafe_cert);
 
     remove(TEST_CONFIG_FILE_PATH);
@@ -332,8 +339,8 @@ void test_config_load_from_file_empty_object(void) {
     TEST_ASSERT_EQUAL_INT(0, ret);
 
     /* Empty JSON should not change default values */
-    TEST_ASSERT_EQUAL_DOUBLE(1.0, config.interval);
-    TEST_ASSERT_EQUAL_INT(5, config.max_retries);
+    TEST_ASSERT_EQUAL_DOUBLE(3.0, config.interval);
+    TEST_ASSERT_EQUAL_INT(3, config.max_retries);
 
     remove(TEST_CONFIG_FILE_PATH);
 }
@@ -412,7 +419,7 @@ void test_config_priority_file_over_defaults(void) {
     config_init(&config);
 
     /* Default value verification */
-    TEST_ASSERT_EQUAL_DOUBLE(1.0, config.interval);
+    TEST_ASSERT_EQUAL_DOUBLE(3.0, config.interval);
     TEST_ASSERT_EQUAL_STRING("", config.token);
 
     /* Override default values after loading from file */
@@ -421,7 +428,7 @@ void test_config_priority_file_over_defaults(void) {
     TEST_ASSERT_EQUAL_STRING("file_only_token", config.token);
 
     /* Fields not specified in the file keep default values */
-    TEST_ASSERT_EQUAL_INT(5, config.max_retries);
+    TEST_ASSERT_EQUAL_INT(3, config.max_retries);
 
     remove(TEST_CONFIG_PRIORITY_PATH);
 }
@@ -474,14 +481,18 @@ void test_config_parse_uci_line_multiple_fields(void) {
     TEST_ASSERT_EQUAL_INT(0, config_parse_uci_line(&config, "komari-agent-c.komari-agent-c.endpoint='wss://uci.example.com/ws'"));
     TEST_ASSERT_EQUAL_INT(0, config_parse_uci_line(&config, "komari-agent-c.komari-agent-c.interval=2.5"));
     TEST_ASSERT_EQUAL_INT(0, config_parse_uci_line(&config, "komari-agent-c.komari-agent-c.disable_web_ssh='1'"));
-    TEST_ASSERT_EQUAL_INT(0, config_parse_uci_line(&config, "komari-agent-c.komari-agent-c.enable_gpu='true'"));
+    TEST_ASSERT_EQUAL_INT(0, config_parse_uci_line(&config, "komari-agent-c.komari-agent-c.memory_include_cache='true'"));
+    TEST_ASSERT_EQUAL_INT(0, config_parse_uci_line(&config, "komari-agent-c.komari-agent-c.prefer_ip_version='4'"));
+    TEST_ASSERT_EQUAL_INT(0, config_parse_uci_line(&config, "komari-agent-c.komari-agent-c.include_nics='eth0,wlan*'"));
     TEST_ASSERT_EQUAL_INT(0, config_parse_uci_line(&config, "komari-agent-c.komari-agent-c.max_retries=10"));
     TEST_ASSERT_EQUAL_INT(0, config_parse_uci_line(&config, "komari-agent-c.komari-agent-c.custom_dns='1.1.1.1'"));
 
     TEST_ASSERT_EQUAL_STRING("wss://uci.example.com/ws", config.endpoint);
     TEST_ASSERT_EQUAL_DOUBLE(2.5, config.interval);
     TEST_ASSERT_TRUE(config.disable_web_ssh);
-    TEST_ASSERT_TRUE(config.enable_gpu);
+    TEST_ASSERT_TRUE(config.memory_include_cache);
+    TEST_ASSERT_EQUAL_STRING("4", config.prefer_ip_version);
+    TEST_ASSERT_EQUAL_STRING("eth0,wlan*", config.include_nics);
     TEST_ASSERT_EQUAL_INT(10, config.max_retries);
     TEST_ASSERT_EQUAL_STRING("1.1.1.1", config.custom_dns);
 }
@@ -524,6 +535,66 @@ void test_config_parse_uci_line_malformed(void) {
     TEST_ASSERT_EQUAL_INT(-1, config_parse_uci_line(&config, NULL));
 }
 
+/* Test HOST_PROC env loading (no AGENT_ prefix, mirrors the Go reference). */
+void test_config_load_from_env_host_proc(void) {
+    agent_config_t config;
+    config_init(&config);
+
+    setenv("HOST_PROC", "/host/proc", 1);
+
+    TEST_ASSERT_EQUAL_INT(0, config_load_from_env(&config));
+    TEST_ASSERT_EQUAL_STRING("/host/proc", config.host_proc);
+
+    unsetenv("HOST_PROC");
+}
+
+/* Test prefer_ip_version validation: only "", "4" and "6" are accepted. */
+void test_config_validate_prefer_ip_version(void) {
+    agent_config_t config;
+
+    config_init(&config);
+    strcpy(config.prefer_ip_version, "4");
+    TEST_ASSERT_EQUAL_INT(0, config_validate(&config));
+    TEST_ASSERT_EQUAL_STRING("4", config.prefer_ip_version);
+
+    config_init(&config);
+    strcpy(config.prefer_ip_version, "6");
+    TEST_ASSERT_EQUAL_INT(0, config_validate(&config));
+    TEST_ASSERT_EQUAL_STRING("6", config.prefer_ip_version);
+
+    config_init(&config);
+    strcpy(config.prefer_ip_version, "both");
+    TEST_ASSERT_EQUAL_INT(0, config_validate(&config));
+    TEST_ASSERT_EQUAL_STRING("", config.prefer_ip_version);
+}
+
+/* Test that the disabled options (protocol_version, enable_gpu, cf_access,
+ * show_warning) are gone from the config surface entirely. */
+void test_config_removed_fields_absent(void) {
+    agent_config_t config;
+    config_init(&config);
+
+    /* Sizes compile-time known: this test asserts the struct still lays out
+     * and that removed JSON keys do not clobber anything. */
+    const char *json_content =
+        "{"
+        "\"protocol_version\": 1,"
+        "\"enable_gpu\": true,"
+        "\"show_warning\": true,"
+        "\"cf_access_client_id\": \"id\","
+        "\"cf_access_client_secret\": \"secret\""
+        "}";
+
+    FILE *f = fopen(TEST_CONFIG_FILE_PATH, "w");
+    TEST_ASSERT_NOT_NULL(f);
+    fchmod(fileno(f), 0600);
+    fputs(json_content, f);
+    fclose(f);
+
+    TEST_ASSERT_EQUAL_INT(0, config_load_from_file(&config, TEST_CONFIG_FILE_PATH));
+    remove(TEST_CONFIG_FILE_PATH);
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -551,6 +622,11 @@ int main(void) {
     RUN_TEST(test_config_parse_uci_line_unquoted_value);
     RUN_TEST(test_config_parse_uci_line_unknown_key_preserves_value);
     RUN_TEST(test_config_parse_uci_line_malformed);
+
+    /* Config surface alignment tests */
+    RUN_TEST(test_config_load_from_env_host_proc);
+    RUN_TEST(test_config_validate_prefer_ip_version);
+    RUN_TEST(test_config_removed_fields_absent);
 
     return UNITY_END();
 }

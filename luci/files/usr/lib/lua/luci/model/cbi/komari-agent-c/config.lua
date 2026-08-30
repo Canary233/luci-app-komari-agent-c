@@ -39,17 +39,17 @@ function endpoint.validate(self, value, section)
     return value
 end
 
-local interval = s:option(Value, "interval", translate("Report Interval (seconds)"), translate("Interval between status reports (0.5 - 300 seconds)"))
+local interval = s:option(Value, "interval", translate("Report Interval (seconds)"), translate("Interval between status reports (1 - 300 seconds)"))
 interval.datatype = "float"
-interval.default = "5"
+interval.default = "3"
 
 function interval.validate(self, value, section)
     local num = tonumber(value)
     if not num then
         return nil, translate("Must be a number")
     end
-    if num < 0.5 then
-        return nil, translate("Minimum interval is 0.5 seconds")
+    if num < 1 then
+        return nil, translate("Minimum interval is 1 second")
     end
     if num > 300 then
         return nil, translate("Maximum interval is 300 seconds")
@@ -71,14 +71,15 @@ local auto_discovery = s2:option(Value, "auto_discovery_key", translate("Auto Di
 auto_discovery.password = true
 auto_discovery.rmempty = true
 
-local protocol_version = s2:option(ListValue, "protocol_version", translate("Protocol Version"), translate("Protocol version to use (1=legacy, 2=current)"))
-protocol_version.default = "2"
-protocol_version:value("1", translate("v1 (Legacy)"))
-protocol_version:value("2", translate("v2 (Current)"))
+local prefer_ip_version = s2:option(ListValue, "prefer_ip_version", translate("Preferred IP Version"), translate("Preferred IP version for connecting to the panel (empty = system default)"))
+prefer_ip_version.default = ""
+prefer_ip_version:value("", translate("System default"))
+prefer_ip_version:value("4", translate("IPv4"))
+prefer_ip_version:value("6", translate("IPv6"))
 
 local max_retries = s2:option(Value, "max_retries", translate("Maximum Retries"), translate("Maximum number of connection retry attempts"))
 max_retries.datatype = "uinteger"
-max_retries.default = "5"
+max_retries.default = "3"
 
 function max_retries.validate(self, value, section)
     local num = tonumber(value)
@@ -149,17 +150,17 @@ disable_ssh.default = 0
 local s5 = m:section(TypedSection, "komari-agent-c", translate("Network Interface Settings"))
 s5.anonymous = true
 
-local include_nics = s5:option(Value, "include_nics", translate("Include Network Interfaces"), translate("Comma-separated list of network interfaces to monitor (empty = all)"))
+local include_nics = s5:option(Value, "include_nics", translate("Include Network Interfaces"), translate("Comma-separated list of network interfaces to monitor; wildcards such as eth* are supported (empty = all non-virtual interfaces)"))
 include_nics.rmempty = true
 
-local exclude_nics = s5:option(Value, "exclude_nics", translate("Exclude Network Interfaces"), translate("Comma-separated list of network interfaces to exclude from monitoring"))
+local exclude_nics = s5:option(Value, "exclude_nics", translate("Exclude Network Interfaces"), translate("Comma-separated list of network interfaces to exclude from monitoring; wildcards are supported"))
 exclude_nics.rmempty = true
 
 -- Disk Settings
 local s6 = m:section(TypedSection, "komari-agent-c", translate("Disk Settings"))
 s6.anonymous = true
 
-local include_mountpoints = s6:option(Value, "include_mountpoints", translate("Include Mount Points"), translate("Comma-separated list of mount points to monitor (empty = all)"))
+local include_mountpoints = s6:option(Value, "include_mountpoints", translate("Include Mount Points"), translate("Semicolon-separated list of mount points to monitor (empty = all physical filesystems)"))
 include_mountpoints.rmempty = true
 
 -- Traffic Statistics
@@ -224,10 +225,13 @@ end
 local s9 = m:section(TypedSection, "komari-agent-c", translate("Advanced Settings"))
 s9.anonymous = true
 
-local enable_gpu = s9:option(Flag, "enable_gpu", translate("Enable GPU Monitoring"), translate("Enable GPU usage monitoring (if supported by hardware)"))
-enable_gpu.default = 0
+local memory_include_cache = s9:option(Flag, "memory_include_cache", translate("Memory Includes Cache"), translate("Report memory usage including cache/buffer (used = total - free)"))
+memory_include_cache.default = 0
 
-local disable_compression = s9:option(Flag, "disable_compression", translate("Disable Compression"), translate("Disable data compression for protocol communication"))
+local memory_report_raw_used = s9:option(Flag, "memory_report_raw_used", translate("Raw Memory Calculation"), translate("Compatibility alias kept for Go flag parity; on Linux this behaves like the default calculation"))
+memory_report_raw_used.default = 0
+
+local disable_compression = s9:option(Flag, "disable_compression", translate("Disable Compression"), translate("Disable WebSocket permessage-deflate and HTTP gzip compression"))
 disable_compression.default = 0
 
 local disable_auto_update = s9:option(Flag, "disable_auto_update", translate("Disable Auto Update Check"), translate("Disable automatic update checking on startup"))

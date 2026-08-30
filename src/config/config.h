@@ -20,12 +20,12 @@
 #define MAX_DNS_LEN 128
 #define MAX_NICS_LEN 512
 #define MAX_MOUNTPOINTS_LEN 512
-#define MAX_CF_ID_LEN 128
-#define MAX_CF_SECRET_LEN 256
 #define MAX_IPV4_LEN 64
 #define MAX_IPV6_LEN 128
 #define MAX_DISCOVERY_KEY_LEN 256
 #define MAX_CONFIG_FILE_LEN 512
+#define MAX_HOST_PROC_LEN 256
+#define MAX_PREFER_IP_LEN 8
 
 typedef struct {
     char token[MAX_TOKEN_LEN];
@@ -34,28 +34,26 @@ typedef struct {
     char include_nics[MAX_NICS_LEN];
     char exclude_nics[MAX_NICS_LEN];
     char include_mountpoints[MAX_MOUNTPOINTS_LEN];
-    char cf_access_client_id[MAX_CF_ID_LEN];
-    char cf_access_client_secret[MAX_CF_SECRET_LEN];
     char custom_ipv4[MAX_IPV4_LEN];
     char custom_ipv6[MAX_IPV6_LEN];
     char auto_discovery_key[MAX_DISCOVERY_KEY_LEN];
     char config_file[MAX_CONFIG_FILE_LEN];
-    
+    char host_proc[MAX_HOST_PROC_LEN];
+    char prefer_ip_version[MAX_PREFER_IP_LEN];
+
     double interval;
     int max_retries;
     int reconnect_interval;
     int info_report_interval;
     int month_rotate;
-    int protocol_version;   /* Active protocol version (protocol_version_t); default PROTOCOL_VERSION_V2 */
 
     bool disable_auto_update;
     bool disable_web_ssh;
     bool ignore_unsafe_cert;
     bool memory_include_cache;
-    bool enable_gpu;
+    bool memory_report_raw_used;
     bool get_ip_addr_from_nic;
-    bool show_warning;
-    bool disable_compression;   /* Whether to disable gzip compression for v2 protocol */
+    bool disable_compression;   /* Whether to disable gzip/permessage-deflate compression */
 } agent_config_t;
 
 /**

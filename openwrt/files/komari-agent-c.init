@@ -11,22 +11,23 @@ validate_section() {
 	uci_load_validate "$NAME" "$NAME" "$1" "$2" \
 		'token:string' \
 		'endpoint:string' \
-		'interval:float:1.0' \
+		'interval:float:3.0' \
 		'custom_dns:string' \
 		'ignore_unsafe_cert:bool:0' \
 		'disable_web_ssh:bool:0' \
-		'max_retries:int:5' \
+		'max_retries:int:3' \
 		'reconnect_interval:int:5' \
-		'info_report_interval:int:30' \
+		'info_report_interval:int:5' \
 		'month_rotate:int:0' \
 		'include_nics:string' \
 		'exclude_nics:string' \
 		'include_mountpoints:string' \
 		'custom_ipv4:string' \
 		'custom_ipv6:string' \
-		'enable_gpu:bool:0' \
+		'memory_include_cache:bool:0' \
+		'memory_report_raw_used:bool:0' \
+		'prefer_ip_version:string' \
 		'auto_discovery_key:string' \
-		'protocol_version:int:2' \
 		'disable_compression:bool:0' \
 		'disable_auto_update:bool:0'
 }
@@ -35,8 +36,8 @@ start_instance() {
 	local token endpoint interval custom_dns ignore_unsafe_cert
 	local disable_web_ssh max_retries reconnect_interval info_report_interval
 	local month_rotate include_nics exclude_nics include_mountpoints
-	local custom_ipv4 custom_ipv6 enable_gpu
-	local auto_discovery_key protocol_version disable_compression disable_auto_update
+	local custom_ipv4 custom_ipv6 memory_include_cache memory_report_raw_used
+	local prefer_ip_version auto_discovery_key disable_compression disable_auto_update
 
 	[ "$2" = "0" ] || {
 		echo "Validation failed"
@@ -84,15 +85,16 @@ start_instance() {
 		AGENT_RECONNECT_INTERVAL="$reconnect_interval" \
 		AGENT_INFO_REPORT_INTERVAL="$info_report_interval" \
 		AGENT_MONTH_ROTATE="$month_rotate" \
-		AGENT_PROTOCOL_VERSION="$protocol_version" \
 		AGENT_DISABLE_AUTO_UPDATE="$disable_auto_update" \
 		AGENT_DISABLE_COMPRESSION="$disable_compression" \
-		AGENT_ENABLE_GPU="$enable_gpu"
+		AGENT_MEMORY_INCLUDE_CACHE="$memory_include_cache" \
+		AGENT_MEMORY_REPORT_RAW_USED="$memory_report_raw_used"
 	[ -n "$include_nics" ] && set -- "$@" AGENT_INCLUDE_NICS="$include_nics"
 	[ -n "$exclude_nics" ] && set -- "$@" AGENT_EXCLUDE_NICS="$exclude_nics"
 	[ -n "$include_mountpoints" ] && set -- "$@" AGENT_INCLUDE_MOUNTPOINTS="$include_mountpoints"
 	[ -n "$custom_ipv4" ] && set -- "$@" AGENT_CUSTOM_IPV4="$custom_ipv4"
 	[ -n "$custom_ipv6" ] && set -- "$@" AGENT_CUSTOM_IPV6="$custom_ipv6"
+	[ -n "$prefer_ip_version" ] && set -- "$@" AGENT_PREFER_IP_VERSION="$prefer_ip_version"
 	[ -n "$auto_discovery_key" ] && set -- "$@" AGENT_AUTO_DISCOVERY_KEY="$auto_discovery_key"
 	procd_set_param env "$@"
 

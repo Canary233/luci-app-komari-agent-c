@@ -537,20 +537,7 @@ int report_upload_task_result(const agent_config_t *config,
         return -1;
     }
 
-    char headers[512] = "";
-    if (config->cf_access_client_id[0] != '\0' && config->cf_access_client_secret[0] != '\0') {
-        int hdr_n = snprintf(headers, sizeof(headers),
-                 "CF-Access-Client-Id: %s\r\n"
-                 "CF-Access-Client-Secret: %s\r\n",
-                 config->cf_access_client_id, config->cf_access_client_secret);
-        if (hdr_n < 0 || (size_t)hdr_n >= sizeof(headers)) {
-            free(payload);
-            return -1;
-        }
-    }
-
-    int ok = http_status_ok(http_post_status(config, url, payload,
-                                             headers[0] != '\0' ? headers : NULL));
+    int ok = http_status_ok(http_post_status(config, url, payload, NULL));
     free(payload);
     return ok ? 0 : -1;
 }
@@ -599,19 +586,7 @@ int report_upload_ping_result(const agent_config_t *config,
     /* escaped_ping_type is no longer needed once the payload has been built. */
     free(escaped_ping_type);
 
-    char headers[512] = "";
-    if (config->cf_access_client_id[0] != '\0' && config->cf_access_client_secret[0] != '\0') {
-        int hdr_n = snprintf(headers, sizeof(headers),
-                 "CF-Access-Client-Id: %s\r\n"
-                 "CF-Access-Client-Secret: %s\r\n",
-                 config->cf_access_client_id, config->cf_access_client_secret);
-        if (hdr_n < 0 || (size_t)hdr_n >= sizeof(headers)) {
-            return -1;
-        }
-    }
-
-    return http_status_ok(http_post_status(config, url, payload,
-                                           headers[0] != '\0' ? headers : NULL))
+    return http_status_ok(http_post_status(config, url, payload, NULL))
                ? 0 : -1;
 }
 
