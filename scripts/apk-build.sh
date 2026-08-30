@@ -50,7 +50,7 @@ EOF
 fi
 
 usage="Usage: $0 [-v] [-h] <pkg_directory> [<destination_directory>]"
-while getopts "hvm:" opt; do
+while getopts "hv" opt; do
 	case $opt in
 	v)
 		echo "$version"

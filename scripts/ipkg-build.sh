@@ -57,8 +57,18 @@ pkg_appears_sane() {
 	arch="$(required_field Architecture)"
 
 	if echo "$pkg" | grep '[^a-zA-Z0-9_.+-]'; then
-		echo "*** Error: Package name $name contains illegal characters, (other than [a-z0-9.+-])" >&2
+		echo "*** Error: Package name $pkg contains illegal characters, (other than [a-z0-9.+-])" >&2
 		PKG_ERROR=1
+	fi
+
+	# Override the Architecture field when -a was given: the checked-in
+	# CONTROL/control ships a placeholder value that must be replaced with
+	# the real target architecture, otherwise opkg refuses to install the
+	# resulting package ("wrong architecture") and the artifact name embeds
+	# the placeholder verbatim.
+	if [ -n "$target_arch" ]; then
+		sed -i -e "s/^Architecture: .*/Architecture: $target_arch/" "$CONTROL/control"
+		arch="$target_arch"
 	fi
 
 	# Resolve conffiles: rewrite each absolute path under pkg_dir, drop entries
@@ -84,8 +94,9 @@ pkg_appears_sane() {
 }
 
 file_modes=""
-usage="Usage: $0 [-v] [-h] [-m] <pkg_directory> [<destination_directory>]"
-while getopts "hvm:" opt; do
+target_arch=""
+usage="Usage: $0 [-v] [-h] [-m] [-a <arch>] <pkg_directory> [<destination_directory>]"
+while getopts "hvm:a:" opt; do
 	case $opt in
 	v)
 		echo "$version"
@@ -93,6 +104,7 @@ while getopts "hvm:" opt; do
 		;;
 	h) echo "$usage" >&2 ;;
 	m) file_modes=$OPTARG ;;
+	a) target_arch=$OPTARG ;;
 	\?) echo "$usage" >&2 ;;
 	esac
 done
