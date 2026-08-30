@@ -45,9 +45,13 @@
  * sizing must account for that expansion. */
 #define TOKEN_MAX_LEN 256
 
-/* Connect/send/recv timeout for the WebSocket transport (MIN-34: extracted
+/* Connect/send timeout for the WebSocket transport (MIN-34: extracted
  * magic number). Slightly longer than the HTTP timeout so a slow TLS handshake
- * does not abort before the server has a chance to respond. */
+ * does not abort before the server has a chance to respond. Applied as
+ * SO_SNDTIMEO and as the connect/handshake-phase SO_RCVTIMEO; the receive
+ * timeout is cleared again after the handshake so the long-lived recv thread
+ * blocks indefinitely on idle reads instead of treating a quiet server as a
+ * transport error. */
 #define WS_CONNECT_TIMEOUT_SEC 15
 
 static const char base64_table[] =
@@ -193,38 +197,69 @@ static int parse_url(const char *url, char *scheme, char *host, int *port, char 
         return -1;
     }
 
-    const char *slash = strchr(url, '/');
-    const char *colon = strchr(url, ':');
-
-    if (colon && (!slash || colon < slash)) {
-        size_t host_len = colon - url;
-        if (host_len >= WS_HOST_MAX) return -1;
-        sn_ret = snprintf(host, WS_HOST_MAX, "%.*s", (int)host_len, url);
+    /* Bracketed IPv6 literal (RFC 3986): the host sits between '[' and ']'
+     * and the optional port follows the closing bracket. Without this branch
+     * the colon inside the address was taken as the port separator and the
+     * host was truncated to e.g. "[2001", failing DNS resolution. */
+    if (url[0] == '[') {
+        const char *close = strchr(url, ']');
+        if (!close) return -1;
+        size_t host_len = (size_t)(close - url) - 1;
+        if (host_len == 0 || host_len >= WS_HOST_MAX) return -1;
+        sn_ret = snprintf(host, WS_HOST_MAX, "%.*s", (int)host_len, url + 1);
         if (sn_ret < 0 || (size_t)sn_ret >= WS_HOST_MAX) return -1;
-        /* Parse port with strtol and validate range (atoi gives no error checking). */
-        char *endp = NULL;
-        long port_val = strtol(colon + 1, &endp, 10);
-        if (endp == colon + 1 || port_val < 1 || port_val > 65535) {
+        url = close + 1;
+        if (url[0] == ':') {
+            char *endp = NULL;
+            long port_val = strtol(url + 1, &endp, 10);
+            if (endp == url + 1 || port_val < 1 || port_val > 65535) {
+                return -1;
+            }
+            if (*endp != '\0' && *endp != '/') {
+                return -1;
+            }
+            *port = (int)port_val;
+            url = endp;
+        }
+        if (url[0] == '\0') {
+            url = "/";
+        } else if (url[0] != '/') {
             return -1;
         }
-        /* Port may be followed by '/' (path) or end of string; reject any other suffix. */
-        if (*endp != '\0' && *endp != '/') {
-            return -1;
-        }
-        *port = (int)port_val;
-        url = slash ? slash : "/";
     } else {
-        if (slash) {
-            size_t host_len = slash - url;
+        const char *slash = strchr(url, '/');
+        const char *colon = strchr(url, ':');
+
+        if (colon && (!slash || colon < slash)) {
+            size_t host_len = colon - url;
             if (host_len >= WS_HOST_MAX) return -1;
             sn_ret = snprintf(host, WS_HOST_MAX, "%.*s", (int)host_len, url);
             if (sn_ret < 0 || (size_t)sn_ret >= WS_HOST_MAX) return -1;
-            url = slash;
+            /* Parse port with strtol and validate range (atoi gives no error checking). */
+            char *endp = NULL;
+            long port_val = strtol(colon + 1, &endp, 10);
+            if (endp == colon + 1 || port_val < 1 || port_val > 65535) {
+                return -1;
+            }
+            /* Port may be followed by '/' (path) or end of string; reject any other suffix. */
+            if (*endp != '\0' && *endp != '/') {
+                return -1;
+            }
+            *port = (int)port_val;
+            url = slash ? slash : "/";
         } else {
-            if (strlen(url) >= WS_HOST_MAX) return -1;
-            sn_ret = snprintf(host, WS_HOST_MAX, "%s", url);
-            if (sn_ret < 0 || (size_t)sn_ret >= WS_HOST_MAX) return -1;
-            url = "/";
+            if (slash) {
+                size_t host_len = slash - url;
+                if (host_len >= WS_HOST_MAX) return -1;
+                sn_ret = snprintf(host, WS_HOST_MAX, "%.*s", (int)host_len, url);
+                if (sn_ret < 0 || (size_t)sn_ret >= WS_HOST_MAX) return -1;
+                url = slash;
+            } else {
+                if (strlen(url) >= WS_HOST_MAX) return -1;
+                sn_ret = snprintf(host, WS_HOST_MAX, "%s", url);
+                if (sn_ret < 0 || (size_t)sn_ret >= WS_HOST_MAX) return -1;
+                url = "/";
+            }
         }
     }
 
@@ -1294,20 +1329,26 @@ int ws_client_connect(ws_client_t *client) {
      * report endpoint. The token query string is appended separately in
      * ws_handshake, so only the path component is selected here. This
      * mirrors the Go reference implementation (server/websocket.go,
-     * buildWebSocketEndpoint) which picks the path by protocol version. */
-    if (ws_client_should_use_current_protocol(client)) {
-        int path_ret = snprintf(path, WS_PATH_MAX, "%s", V2_RPC_ENDPOINT);
-        if (path_ret < 0 || (size_t)path_ret >= WS_PATH_MAX) {
-            KOMARI_LOG_WARN("v2 RPC endpoint path truncated");
-            ws_client_note_protocol_result(client, false);
-            return -1;
-        }
-    } else {
-        int path_ret = snprintf(path, WS_PATH_MAX, "%s", "/api/clients/report");
-        if (path_ret < 0 || (size_t)path_ret >= WS_PATH_MAX) {
-            KOMARI_LOG_WARN("v1 report endpoint path truncated");
-            ws_client_note_protocol_result(client, false);
-            return -1;
+     * buildWebSocketEndpoint) which picks the path by protocol version.
+     *
+     * Clients with keep_endpoint_path set (the terminal session) keep the
+     * path parsed from their endpoint instead: /api/clients/terminal is a
+     * dedicated endpoint and must not be rewritten to the RPC/report path. */
+    if (!client->config.keep_endpoint_path) {
+        if (ws_client_should_use_current_protocol(client)) {
+            int path_ret = snprintf(path, WS_PATH_MAX, "%s", V2_RPC_ENDPOINT);
+            if (path_ret < 0 || (size_t)path_ret >= WS_PATH_MAX) {
+                KOMARI_LOG_WARN("v2 RPC endpoint path truncated");
+                ws_client_note_protocol_result(client, false);
+                return -1;
+            }
+        } else {
+            int path_ret = snprintf(path, WS_PATH_MAX, "%s", "/api/clients/report");
+            if (path_ret < 0 || (size_t)path_ret >= WS_PATH_MAX) {
+                KOMARI_LOG_WARN("v1 report endpoint path truncated");
+                ws_client_note_protocol_result(client, false);
+                return -1;
+            }
         }
     }
 
@@ -1470,7 +1511,18 @@ int ws_client_connect(ws_client_t *client) {
     }
     client->connected = true;
     pthread_mutex_unlock(&client->state_mutex);
-    
+
+    /* Clear the connect-phase receive timeout. The recv thread issues
+     * blocking reads for the lifetime of the connection; with SO_RCVTIMEO
+     * still at WS_CONNECT_TIMEOUT_SEC, any quiet 15-second window made
+     * recv() return EAGAIN (and SSL_read return WANT_READ), which read_full
+     * treats as a fatal error — tearing down and reconnecting a perfectly
+     * healthy idle connection. Liveness is instead detected through send
+     * failures (1 Hz report, 30 s heartbeat ping) and server-initiated
+     * close. SO_SNDTIMEO is kept as write-stall protection. */
+    struct timeval no_timeout = {0, 0};
+    setsockopt(client->fd, SOL_SOCKET, SO_RCVTIMEO, &no_timeout, sizeof(no_timeout));
+
     if (pthread_create(&client->recv_thread, NULL, ws_recv_thread, client) != 0) {
         if (client->ssl) {
             SSL_shutdown(client->ssl);
@@ -1599,6 +1651,12 @@ void ws_client_stop(ws_client_t *client) {
     if (!client) return;
     pthread_mutex_lock(&client->state_mutex);
     client->should_stop = true;
+    /* Also mark the connection as closed so polling callers
+     * (ws_client_is_connected) observe the stop immediately and wind down
+     * without waiting for the recv thread to notice the flag between
+     * frames. The recv thread exits on its next loop iteration; the fd/SSL
+     * teardown itself stays in ws_client_disconnect. */
+    client->connected = false;
     pthread_mutex_unlock(&client->state_mutex);
 }
 

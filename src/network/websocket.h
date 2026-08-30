@@ -40,6 +40,11 @@ typedef struct {
     int max_retries;
     int reconnect_interval;
     double report_interval;
+    /* When true, ws_client_connect keeps the URL path parsed from endpoint
+     * (used by the dedicated terminal connection whose endpoint already
+     * carries /api/clients/terminal). When false (default), the path is
+     * overridden with the protocol-specific report/RPC endpoint. */
+    bool keep_endpoint_path;
 } ws_client_config_t;
 
 typedef struct {
