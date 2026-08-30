@@ -77,6 +77,25 @@ static void set_socket_timeout(int fd, int timeout_ms) {
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
+/* Wait for connect() to complete on a non-blocking socket. poll() is retried
+ * on EINTR with the remaining timeout recomputed, so a signal arrival (the
+ * agent forks regularly, making EINTR realistic) neither aborts the ping nor
+ * extends the total wait beyond the caller's deadline.
+ * Returns 1 when the socket is writable, 0 on timeout, -1 on poll error. */
+static int poll_connect_wait(int fd, int timeout_ms) {
+    int64_t deadline = get_time_ms() + timeout_ms;
+    for (;;) {
+        int64_t remaining = deadline - get_time_ms();
+        if (remaining <= 0) return 0;
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLOUT;
+        int ret = poll(&pfd, 1, (int)remaining);
+        if (ret < 0 && errno == EINTR) continue;
+        return ret;
+    }
+}
+
 /* Detect the address family of a numeric IP literal.
  * Returns AF_INET, AF_INET6, or -1 when the string is not a valid IP
  * literal. Uses temporary in_addr/in6_addr buffers so the caller's
@@ -461,11 +480,7 @@ int ping_task_tcp(const char *target, int timeout_ms, const char *custom_dns) {
         return (int)(end_time - start_time);
     }
 
-    struct pollfd pfd;
-    pfd.fd = fd;
-    pfd.events = POLLOUT;
-
-    ret = poll(&pfd, 1, timeout_ms);
+    ret = poll_connect_wait(fd, timeout_ms);
     if (ret <= 0) {
         close(fd);
         return -1;
@@ -624,11 +639,7 @@ int ping_task_http(const char *target, int timeout_ms, const char *custom_dns, i
     }
 
     if (ret != 0) {
-        struct pollfd pfd;
-        pfd.fd = fd;
-        pfd.events = POLLOUT;
-
-        ret = poll(&pfd, 1, timeout_ms);
+        ret = poll_connect_wait(fd, timeout_ms);
         if (ret <= 0) {
             close(fd);
             return -1;
@@ -713,6 +724,14 @@ int ping_task_http(const char *target, int timeout_ms, const char *custom_dns, i
             close(fd);
             return -1;
         }
+    } else {
+        /* Plain-HTTP path: restore blocking mode and apply socket timeouts,
+         * mirroring the TLS branch above. Without this the socket stays
+         * non-blocking: the first recv() returns EAGAIN before the server's
+         * response can arrive, the read loop breaks with zero bytes, and
+         * every http:// ping is reported as unreachable. */
+        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+        set_socket_timeout(fd, timeout_ms);
     }
 
     char request[1024];

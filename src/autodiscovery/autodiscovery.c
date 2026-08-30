@@ -11,6 +11,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -218,15 +221,54 @@ static int http_post_get_body(const char *url,
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (fd < 0) continue;
 
-        /* Set timeout */
+        /* Set response-phase timeouts. Note these do NOT bound connect():
+         * that is handled with a non-blocking connect + poll() deadline
+         * below, since SO_SNDTIMEO/SO_RCVTIMEO do not apply to connect()
+         * and a blocking connect against an unresponsive endpoint would
+         * otherwise hang for the kernel TCP timeout (~2 minutes with
+         * default tcp_syn_retries). */
         struct timeval tv;
         tv.tv_sec = HTTP_CONNECT_TIMEOUT_SEC;
         tv.tv_usec = 0;
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        }
+
         if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
+            if (flags >= 0) {
+                fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+            }
             break;  /* Success */
+        }
+
+        if (errno == EINPROGRESS) {
+            int connected = 0;
+            time_t deadline = time(NULL) + HTTP_CONNECT_TIMEOUT_SEC;
+            for (;;) {
+                time_t now = time(NULL);
+                if (now >= deadline) break;
+                struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+                int pr = poll(&pfd, 1, (int)((deadline - now) * 1000));
+                if (pr < 0 && errno == EINTR) continue;
+                if (pr <= 0) break;
+                int so_error = 0;
+                socklen_t so_len = sizeof(so_error);
+                getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &so_len);
+                if (so_error == 0) connected = 1;
+                break;
+            }
+            /* Restore blocking mode: the response read path below relies on
+             * SO_RCVTIMEO-bounded blocking recv()/SSL_read(). */
+            if (flags >= 0) {
+                fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+            }
+            if (connected) {
+                break;
+            }
         }
 
         close(fd);
@@ -363,6 +405,11 @@ static int http_post_get_body(const char *url,
 
         if (n > 0) {
             total += (size_t)n;
+        } else if (n < 0 && !ssl && errno == EINTR) {
+            /* Signal interruption (the agent forks regularly): retry instead
+             * of treating it as end-of-stream, which truncated the response
+             * mid-headers and failed registration spuriously. */
+            continue;
         } else {
             break;
         }
