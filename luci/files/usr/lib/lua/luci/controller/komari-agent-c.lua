@@ -43,9 +43,6 @@ function index()
 
     entry({"admin", "services", "komari-agent-c", "api", "log"},
         call("api_get_log")).leaf = true
-
-    entry({"admin", "services", "komari-agent-c", "api", "clear_log"},
-        call("api_clear_log")).leaf = true
 end
 
 function get_service_status()
@@ -136,45 +133,78 @@ function api_get_status()
     luci.http.write_json(response)
 end
 
-function api_start_service()
-    local result = os.execute("/etc/init.d/komari-agent-c start >/dev/null 2>&1")
+-- Verify that a state-changing request is a POST carrying the dispatcher's
+-- CSRF token. These endpoints were previously reachable via plain GET, which
+-- bypasses LuCI's POST-only token protection (SameSite=Lax still lets
+-- top-level navigations carry the admin's session cookie).
+local function check_csrf()
+    if luci.http.getenv("REQUEST_METHOD") ~= "POST" then
+        return false
+    end
+    local token = luci.http.formvalue("token")
+    local ctx = require("luci.dispatcher").context
+    return token ~= nil and token ~= "" and
+        ctx ~= nil and ctx.authtoken ~= nil and token == ctx.authtoken
+end
+
+local function respond(code, message)
     luci.http.prepare_content("application/json")
-    luci.http.write_json({
-        code = result == 0 and 0 or 1,
-        message = result == 0 and "Service started" or "Failed to start service"
-    })
+    luci.http.write_json({ code = code, message = message })
+end
+
+function api_start_service()
+    if not check_csrf() then
+        respond(403, "Forbidden")
+        return
+    end
+    local result = os.execute("/etc/init.d/komari-agent-c start >/dev/null 2>&1")
+    respond(result == 0 and 0 or 1,
+        result == 0 and "Service started" or "Failed to start service")
 end
 
 function api_stop_service()
+    if not check_csrf() then
+        respond(403, "Forbidden")
+        return
+    end
     local result = os.execute("/etc/init.d/komari-agent-c stop >/dev/null 2>&1")
-    luci.http.prepare_content("application/json")
-    luci.http.write_json({
-        code = result == 0 and 0 or 1,
-        message = result == 0 and "Service stopped" or "Failed to stop service"
-    })
+    respond(result == 0 and 0 or 1,
+        result == 0 and "Service stopped" or "Failed to stop service")
 end
 
 function api_restart_service()
+    if not check_csrf() then
+        respond(403, "Forbidden")
+        return
+    end
     local result = os.execute("/etc/init.d/komari-agent-c restart >/dev/null 2>&1")
-    luci.http.prepare_content("application/json")
-    luci.http.write_json({
-        code = result == 0 and 0 or 1,
-        message = result == 0 and "Service restarted" or "Failed to restart service"
-    })
+    respond(result == 0 and 0 or 1,
+        result == 0 and "Service restarted" or "Failed to restart service")
 end
 
 function api_test_connection()
+    if not check_csrf() then
+        respond(403, "Forbidden")
+        return
+    end
     local uci = require("luci.model.uci").cursor()
     local endpoint = uci:get("komari-agent-c", "komari-agent-c", "endpoint") or ""
-    local token = uci:get("komari-agent-c", "komari-agent-c", "token") or ""
     local ignore_cert = uci:get("komari-agent-c", "komari-agent-c", "ignore_unsafe_cert") or "0"
 
     if endpoint == "" then
-        luci.http.prepare_content("application/json")
-        luci.http.write_json({
-            code = 1,
-            message = "Endpoint not configured"
-        })
+        respond(1, "Endpoint not configured")
+        return
+    end
+
+    -- The endpoint is interpolated into a shell command, and the CBI-side
+    -- validation only checks the URL scheme. Restrict the remaining
+    -- characters to a conservative URL set and additionally pass the value
+    -- through shellquote so shell metacharacters can never break out of the
+    -- quoting (the endpoint is admin-controlled UCI data, but defense in
+    -- depth costs nothing and the previous single-quote wrapping alone was
+    -- escapable with a single quote).
+    if not endpoint:match("^https?://[A-Za-z0-9.:%[%]_/~-]+$") then
+        respond(1, "Endpoint contains invalid characters")
         return
     end
 
@@ -184,8 +214,8 @@ function api_test_connection()
     end
 
     local cmd = string.format(
-        "curl -s -o /dev/null -w '%%{http_code}' --connect-timeout 5 %s '%s' 2>/dev/null",
-        curl_opts, endpoint
+        "curl -s -o /dev/null -w '%%{http_code}' --connect-timeout 5 %s %s 2>/dev/null",
+        curl_opts, luci.util.shellquote(endpoint)
     )
 
     local http_code = luci.util.exec(cmd)
@@ -216,15 +246,5 @@ function api_get_log()
     luci.http.write_json({
         code = 0,
         log = log_content or ""
-    })
-end
-
-function api_clear_log()
-    local result = os.execute("logrotate -f /etc/logrotate.d/komari-agent-c 2>/dev/null || true")
-
-    luci.http.prepare_content("application/json")
-    luci.http.write_json({
-        code = 0,
-        message = "Log cleared"
     })
 end

@@ -12,9 +12,6 @@ Licensed under MIT License
         failedToLoadLog: '<%:Failed to load log%>',
         stopAutoRefresh: '<%:Stop Auto Refresh%>',
         autoRefresh: '<%:Auto Refresh%>',
-        clearLogConfirm: '<%:Are you sure you want to clear the log?%>',
-        logCleared: '<%:Log cleared successfully%>',
-        failedToClearLog: '<%:Failed to clear log%>',
         loading: '<%:Loading...%>'
     };
 
@@ -68,21 +65,6 @@ Licensed under MIT License
         }
     }
 
-    function clearLog() {
-        if (confirm(translations.clearLogConfirm)) {
-            XHR.get('<%=luci.dispatcher.build_url("admin", "services", "komari-agent-c", "api", "clear_log")%>', null,
-                function(x, data) {
-                    if (data.code === 0) {
-                        alert(translations.logCleared);
-                        loadLog();
-                    } else {
-                        alert(translations.failedToClearLog);
-                    }
-                }
-            );
-        }
-    }
-
     function changeLines() {
         currentLines = parseInt(document.getElementById('log-lines').value) || 100;
         loadLog();
@@ -120,7 +102,6 @@ Licensed under MIT License
                 <td class="cbi-section-table-cell">
                     <button class="cbi-button cbi-button-action" onclick="loadLog()"><%:Refresh%></button>
                     <button class="cbi-button cbi-button-action" id="auto-refresh-btn" onclick="toggleAutoRefresh()"><%:Auto Refresh%></button>
-                    <button class="cbi-button cbi-button-negative" onclick="clearLog()"><%:Clear Log%></button>
                 </td>
             </tr>
         </table>

@@ -110,54 +110,59 @@ Licensed under MIT License
         );
     }
 
+    var csrfToken = '<%=luci.dispatcher.context.authtoken or ""%>';
+
+    /* State-changing endpoints require a POST carrying the dispatcher CSRF
+     * token (enforced by the controller); plain GET requests are rejected. */
+    function postAction(url, successMsg, failureMsg) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=utf-8');
+        xhr.onload = function() {
+            var data = {};
+            try { data = JSON.parse(xhr.responseText); } catch (e) {}
+            alert(data.code === 0 ? successMsg : (data.message || failureMsg));
+        };
+        xhr.onerror = function() { alert(failureMsg); };
+        xhr.send('token=' + encodeURIComponent(csrfToken));
+    }
+
     function startService() {
-        XHR.get('<%=luci.dispatcher.build_url("admin", "services", "komari-agent-c", "api", "start")%>', null,
-            function(x, data) {
-                if (data.code === 0) {
-                    alert(translations.serviceStarted);
-                } else {
-                    alert(translations.failedToStart);
-                }
-            }
-        );
+        postAction('<%=luci.dispatcher.build_url("admin", "services", "komari-agent-c", "api", "start")%>',
+            translations.serviceStarted, translations.failedToStart);
     }
 
     function stopService() {
-        XHR.get('<%=luci.dispatcher.build_url("admin", "services", "komari-agent-c", "api", "stop")%>', null,
-            function(x, data) {
-                if (data.code === 0) {
-                    alert(translations.serviceStopped);
-                } else {
-                    alert(translations.failedToStop);
-                }
-            }
-        );
+        postAction('<%=luci.dispatcher.build_url("admin", "services", "komari-agent-c", "api", "stop")%>',
+            translations.serviceStopped, translations.failedToStop);
     }
 
     function restartService() {
-        XHR.get('<%=luci.dispatcher.build_url("admin", "services", "komari-agent-c", "api", "restart")%>', null,
-            function(x, data) {
-                if (data.code === 0) {
-                    alert(translations.serviceRestarted);
-                } else {
-                    alert(translations.failedToRestart);
-                }
-            }
-        );
+        postAction('<%=luci.dispatcher.build_url("admin", "services", "komari-agent-c", "api", "restart")%>',
+            translations.serviceRestarted, translations.failedToRestart);
     }
 
     function testConnection() {
         var btn = document.getElementById('test-btn');
         btn.disabled = true;
         btn.textContent = translations.testing;
-        
-        XHR.get('<%=luci.dispatcher.build_url("admin", "services", "komari-agent-c", "api", "test_connection")%>', null,
-            function(x, data) {
-                btn.disabled = false;
-                btn.textContent = translations.testConnection;
-                alert(data.message);
-            }
-        );
+
+        var url = '<%=luci.dispatcher.build_url("admin", "services", "komari-agent-c", "api", "test_connection")%>';
+        var restore = function(data) {
+            btn.disabled = false;
+            btn.textContent = translations.testConnection;
+            alert(data && data.message ? data.message : translations.testConnection);
+        };
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=utf-8');
+        xhr.onload = function() {
+            var data = {};
+            try { data = JSON.parse(xhr.responseText); } catch (e) {}
+            restore(data);
+        };
+        xhr.onerror = function() { restore({}); };
+        xhr.send('token=' + encodeURIComponent(csrfToken));
     }
 
     window.onload = function() {
