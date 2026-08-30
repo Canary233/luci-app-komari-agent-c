@@ -28,7 +28,7 @@ To sync a new upstream version:
 git clone --branch v2.6.1 --depth 1 https://github.com/ThrowTheSwitch/Unity /tmp/unity
 cp /tmp/unity/unity.c /tmp/unity/unity.h /tmp/unity/unity_internals.h tests/
 git diff tests/unity.c tests/unity.h tests/unity_internals.h
-# Update the version in this README, tests/CMakeLists.txt (comment), and CLAUDE.md
+# Update the version in this README, tests/CMakeLists.txt (comment), and AGENTS.md
 ```
 
 After updating, verify the version macros in `unity.h` match the documented

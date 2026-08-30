@@ -29,7 +29,7 @@ git clone --branch v1.7.19 --depth 1 https://github.com/DaveGamble/cJSON /tmp/cj
 cp /tmp/cjson/cJSON.c /tmp/cjson/cJSON.h src/vendor/
 # Verify no local patches are lost (there should be none)
 git diff src/vendor/
-# Update the version number in this README and in CLAUDE.md
+# Update the version number in this README and in AGENTS.md
 ```
 
 ## Security

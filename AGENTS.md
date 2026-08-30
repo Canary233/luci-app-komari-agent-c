@@ -194,7 +194,7 @@ luci-app-komari-agent-c/
 ├── .github/workflows/      # CI/CD 配置（ci.yml + release.yml）
 ├── CMakeLists.txt          # 顶层 CMake 配置
 ├── CMakePresets.json       # 9 个标准化构建预设
-└── CLAUDE.md               # 本文件
+└── AGENTS.md               # 本文件
 ```
 
 ## CMake 模块化配置

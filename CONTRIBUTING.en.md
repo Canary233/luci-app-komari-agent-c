@@ -152,7 +152,7 @@ luci-app-komari-agent-c/
 ├── .github/workflows/      # CI/CD configuration (ci.yml + release.yml)
 ├── CMakeLists.txt          # Top-level CMake configuration
 ├── CMakePresets.json       # 9 standardized build presets
-└── CLAUDE.md               # Project maintenance guide (internal)
+└── AGENTS.md               # Project maintenance guide (internal)
 ```
 
 ## Contact

@@ -72,7 +72,7 @@ if(NOT KOMARI_TARGET_LINUX AND NOT KOMARI_TARGET_OPENWRT AND NOT KOMARI_TARGET_M
 endif()
 
 # macOS is explicitly supported only for CMake configure / syntax checks
-# (see CLAUDE.md). Real builds happen on Linux/OpenWrt or via Docker/WSL.
+# (see AGENTS.md). Real builds happen on Linux/OpenWrt or via Docker/WSL.
 if(KOMARI_TARGET_MACOS)
     message(WARNING
         "Building on macOS is supported for CMake configuration checks only. "
