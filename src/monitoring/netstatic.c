@@ -219,17 +219,40 @@ done:
 static int netstatic_write_to_disk(const char *path, const char *buf, size_t buf_len) {
     if (!path || !path[0] || !buf) return -1;
 
-    FILE *fp = fopen(path, "w");
+    /* Write to a temp file and rename() over the target. rename() is atomic
+     * on POSIX, so a crash or SIGKILL mid-write (procd escalates to SIGKILL
+     * after its 5-second stop timeout) can no longer truncate the persistence
+     * file — losing it used to discard the entire per-interface traffic
+     * history on the next load. */
+    char tmp_path[512];
+    int pn = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    if (pn < 0 || (size_t)pn >= sizeof(tmp_path)) return -1;
+
+    FILE *fp = fopen(tmp_path, "w");
     if (!fp) return -1;
 
     int rc = 0;
     if (fwrite(buf, 1, buf_len, fp) != buf_len) {
         rc = -1;
     }
+    if (fflush(fp) != 0) {
+        rc = -1;
+    }
+    if (fsync(fileno(fp)) != 0) {
+        rc = -1;
+    }
     if (fclose(fp) != 0) {
         rc = -1;
     }
-    return rc;
+    if (rc != 0) {
+        unlink(tmp_path);
+        return rc;
+    }
+    if (rename(tmp_path, path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
 }
 
 /* Background worker thread: periodically collects traffic samples and saves

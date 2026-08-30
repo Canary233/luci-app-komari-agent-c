@@ -185,10 +185,17 @@ int monitoring_get_cpu_info(cpu_info_t *info) {
      * The first call has no baseline and reports 0.0% usage. */
     FILE *stat_fp = fopen(KOMARI_PATH_PROC_STAT, "r");
     if (stat_fp) {
-        unsigned long long user, nice, system, idle, iowait, irq, softirq;
-        if (fscanf(stat_fp, "cpu %llu %llu %llu %llu %llu %llu %llu",
-                   &user, &nice, &system, &idle, &iowait, &irq, &softirq) == 7) {
-            unsigned long long total = user + nice + system + idle + iowait + irq + softirq;
+        unsigned long long user, nice, system, idle, iowait, irq, softirq, steal = 0;
+        if (fscanf(stat_fp, "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
+                   &user, &nice, &system, &idle, &iowait, &irq, &softirq,
+                   &steal) >= 7) {
+            /* Include steal in the total: on virtualized hosts the
+             * hypervisor's steal time is real elapsed CPU time that appears
+             * in no guest-side column, and omitting it inflated the computed
+             * usage. guest/guest_nice are already counted inside user/nice
+             * by the kernel, so they stay out of the sum. On kernels that
+             * only expose 7 columns, fscanf leaves steal at 0. */
+            unsigned long long total = user + nice + system + idle + iowait + irq + softirq + steal;
             unsigned long long used = user + nice + system + irq + softirq;
 
             if (g_cpu_sample_initialized) {
