@@ -431,6 +431,9 @@ static int establish_terminal_connection(const char *token, const char *request_
     ws_config.ignore_cert = g_config.ignore_unsafe_cert;
     ws_config.max_retries = 1;
     ws_config.reconnect_interval = 1;
+    /* Keep the /api/clients/terminal path built above: ws_client_connect
+     * must not rewrite this dedicated endpoint to the report/RPC path. */
+    ws_config.keep_endpoint_path = true;
 
     session->ws = ws_client_create(&ws_config);
     if (!session->ws) {
@@ -653,14 +656,33 @@ static void handle_ws_message(ws_client_t *client, const ws_message_t *msg) {
                 strstr(cmd_path, "..") != NULL) {
                 KOMARI_LOG_WARN("[Task] Rejected exec from restricted path (Task ID: %s)",
                                 msg->exec_task_id);
+                /* Report the rejection so the panel does not wait forever
+                 * for a task result that will never arrive. Exit code 126
+                 * mirrors the shell's "command found but not executable"
+                 * convention. */
+                report_upload_task_result(&g_config, msg->exec_task_id,
+                                          "exec: command path rejected", 126,
+                                          utils_get_current_timestamp());
             } else if (utils_exec_command_argv(argv, output, sizeof(output), &exit_code) == 0) {
                 report_upload_task_result(&g_config, msg->exec_task_id, output, exit_code,
                                            utils_get_current_timestamp());
+            } else {
+                /* fork()/pipe() failure inside the exec helper: report a
+                 * synthetic failure result (exit code 127) so the panel's
+                 * task does not hang. */
+                KOMARI_LOG_ERROR("[Task] Failed to execute command (Task ID: %s)",
+                                 msg->exec_task_id);
+                report_upload_task_result(&g_config, msg->exec_task_id,
+                                          "exec: failed to execute command", 127,
+                                          utils_get_current_timestamp());
             }
             free(argv);
             free(argv_buf);
         } else {
             KOMARI_LOG_WARN("[Task] Failed to parse exec command (Task ID: %s)", msg->exec_task_id);
+            report_upload_task_result(&g_config, msg->exec_task_id,
+                                      "exec: failed to parse command", 127,
+                                      utils_get_current_timestamp());
         }
     } else if (strcmp(msg->message, "ping") == 0 || msg->ping_type[0] != '\0') {
         KOMARI_LOG_INFO("[Ping] Received ping request: %s (%s) Task ID: %u",
@@ -721,6 +743,10 @@ static void *report_thread(void *arg) {
 
         if (!connected) {
             KOMARI_LOG_INFO("[WebSocket] Connecting to %s...", g_config.endpoint);
+            /* Refresh the LuCI status file with connected=false so the
+             * dashboard reflects the outage instead of stale metrics from
+             * the last healthy tick. */
+            report_write_status_file(&g_config, NULL, false);
             
             int retries = 0;
             while (retries < g_config.max_retries && g_running) {
@@ -783,17 +809,20 @@ static void *report_thread(void *arg) {
         int ack_buf[V2_ACK_IDS_MAX];
         int ack_count = 0;
         int len;
+        report_status_metrics_t status_metrics;
+        memset(&status_metrics, 0, sizeof(status_metrics));
 
         if (use_v2) {
             v2_snapshot_ack_ids(ws_client_get_v2_state(g_ws_client), ack_buf,
                                 (int)(sizeof(ack_buf) / sizeof(ack_buf[0])),
                                 &ack_count);
-            len = report_generate_v2_with_acks(&g_config, &g_net_state, report_buf,
-                                                sizeof(report_buf),
-                                                ack_count > 0 ? ack_buf : NULL,
-                                                ack_count);
+            len = report_generate_v2_with_acks_ex(&g_config, &g_net_state, report_buf,
+                                                  sizeof(report_buf),
+                                                  ack_count > 0 ? ack_buf : NULL,
+                                                  ack_count, &status_metrics);
         } else {
-            len = report_generate(&g_config, &g_net_state, report_buf, sizeof(report_buf));
+            len = report_generate_ex(&g_config, &g_net_state, report_buf, sizeof(report_buf),
+                                     &status_metrics);
         }
 
         bool is_connected = ws_client_is_connected(g_ws_client);
@@ -814,6 +843,13 @@ static void *report_thread(void *arg) {
                  * "remove only these IDs" operation). */
                 v2_clear_acks(ws_client_get_v2_state(g_ws_client));
             }
+        }
+
+        /* Publish this tick's metrics for the LuCI status page. Written even
+         * when the send failed (with the actual connection state) so the
+         * dashboard never shows data older than one report interval. */
+        if (len > 0) {
+            report_write_status_file(&g_config, &status_metrics, is_connected);
         }
 
         time_t now = time(NULL);
@@ -871,6 +907,12 @@ static void *heartbeat_thread(void *arg) {
                  * level control and written to the log file in daemon mode;
                  * printf bypasses both and would be lost under procd. */
                 KOMARI_LOG_WARN("[WebSocket] Heartbeat failed");
+                /* Flag-only stop (no fd/SSL teardown): marks the connection
+                 * as closed so the report thread's next is_connected() check
+                 * drives a reconnect instead of sending into a dead
+                 * connection. Repeated failures previously only logged and
+                 * left a black-holed connection in place. */
+                ws_client_stop(g_ws_client);
             }
         }
         /* Sleep in 1-second slices so the thread observes g_running
@@ -936,6 +978,7 @@ int main(int argc, char *argv[]) {
     bool cli_set_config_file = false;
     bool cli_set_insecure = false;
     bool cli_set_disable_ssh = false;
+    bool verbose = false;
 
     int opt;
     while ((opt = getopt_long(argc, argv, "t:e:i:d:c:ksvh", long_options, NULL)) != -1) {
@@ -967,6 +1010,7 @@ int main(int argc, char *argv[]) {
                 cli_set_disable_ssh = true;
                 break;
             case 'v':
+                verbose = true;
                 break;
             case 'h':
                 print_usage(argv[0]);
@@ -976,6 +1020,21 @@ int main(int argc, char *argv[]) {
                 return 1;
         }
     }
+
+    /* Initialize the logger before any configuration source is loaded so
+     * warnings from the loaders and config_validate() are actually emitted.
+     * Previously logger_init was never called, leaving the logger in its
+     * zero-initialized default state (no stdout, no syslog) and turning
+     * every KOMARI_LOG_* call in the program into a silent no-op. Output
+     * goes to stdout, which procd redirects to the system log via
+     * procd_set_param stdout; -v/--verbose lowers the threshold to DEBUG. */
+    logger_config_t log_cfg;
+    memset(&log_cfg, 0, sizeof(log_cfg));
+    log_cfg.level = verbose ? LOG_LEVEL_DEBUG : LOG_LEVEL_INFO;
+    log_cfg.use_stdout = true;
+    log_cfg.use_syslog = false;
+    log_cfg.tag = NULL;
+    logger_init(&log_cfg);
 
     /* Resolve the JSON config file path: command-line -c takes priority over
      * the AGENT_CONFIG_FILE environment variable. Both must be resolved before

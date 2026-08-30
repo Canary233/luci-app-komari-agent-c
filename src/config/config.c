@@ -583,11 +583,20 @@ int config_validate(agent_config_t *config) {
 
     /* MAJ-22 / T12.3: interval must be strictly positive. A non-positive
      * interval would cause busy loops or divide-by-zero in callers. Fall
-     * back to the default rather than aborting. */
+     * back to the default rather than aborting.
+     *
+     * Additionally clamp sub-second values to 1.0: the report thread sleeps
+     * in 1-second slices, so any 0 < interval < 1 would truncate to zero
+     * sleep iterations and busy-spin the reporting loop. */
     if (config->interval <= 0) {
         KOMARI_LOG_ERROR("Config validation: interval (%.2f) must be > 0, using default %.1f",
                          config->interval, CONFIG_DEFAULT_INTERVAL);
         config->interval = CONFIG_DEFAULT_INTERVAL;
+    } else if (config->interval < 1.0) {
+        KOMARI_LOG_WARN("Config validation: interval (%.2f) is below the 1-second "
+                        "sleep granularity, clamping to 1.0",
+                        config->interval);
+        config->interval = 1.0;
     }
 
     /* Validate other numeric knobs that must be strictly positive to keep
