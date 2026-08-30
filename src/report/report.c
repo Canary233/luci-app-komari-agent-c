@@ -30,6 +30,7 @@
 #include "gpu.h"
 #include "cJSON.h"
 #include "jsonrpc.h"
+#include "paths.h"
 
 /* Connect/send/recv timeout for HTTP requests (MIN-34: extracted magic number). */
 #define HTTP_CONNECT_TIMEOUT_SEC 10
@@ -162,31 +163,51 @@ static int send_full(SSL *ssl, int fd, const char *data, size_t len) {
     return 0;
 }
 
-int report_generate(const agent_config_t *config, monitoring_net_state_t *net_state,
-                    char *buf, size_t buf_len) {
-    if (!config || !buf || buf_len == 0) return -1;
-
-    cpu_info_t cpu;
-    mem_info_t mem, swap;
+/* One sample of all metrics used by the periodic report payload. Collected
+ * exactly once per report cycle so the WebSocket payload and the LuCI status
+ * file reflect the same instant: CPU usage is delta-based, and sampling twice
+ * per cycle would halve one delta window and skew its value. */
+typedef struct {
+    double cpu_usage;
+    mem_info_t mem;
+    mem_info_t swap;
     disk_info_t disk;
     net_info_t net;
     load_info_t load;
     conn_info_t conn;
+    uint64_t uptime;
+    int process_count;
+} report_sample_t;
 
+static void report_collect_sample(const agent_config_t *config,
+                                  monitoring_net_state_t *net_state,
+                                  report_sample_t *s) {
+    cpu_info_t cpu;
     monitoring_get_cpu_info(&cpu);
-    monitoring_get_mem_swap_info(config->memory_include_cache, &mem, &swap);
-    monitoring_get_disk_info(&disk);
-    monitoring_get_net_info(net_state, &net);
-    monitoring_get_load_info(&load);
-    monitoring_get_conn_info(&conn);
-    
-    uint64_t uptime = monitoring_get_uptime();
-    int process_count = monitoring_get_process_count();
-    
-    /* Report the real CPU usage, including 0% for an idle system. The server
-     * treats 0.00 as a valid value, so no artificial floor is needed. */
-    double cpu_usage = cpu.cpu_usage;
+    monitoring_get_mem_swap_info(config->memory_include_cache, &s->mem, &s->swap);
+    monitoring_get_disk_info(&s->disk);
+    monitoring_get_net_info(net_state, &s->net);
+    monitoring_get_load_info(&s->load);
+    monitoring_get_conn_info(&s->conn);
+    s->uptime = monitoring_get_uptime();
+    s->process_count = monitoring_get_process_count();
+    s->cpu_usage = cpu.cpu_usage;
+}
 
+static void report_fill_status_metrics(const report_sample_t *s,
+                                       report_status_metrics_t *out) {
+    out->cpu_usage = s->cpu_usage;
+    out->mem_total = s->mem.total;
+    out->mem_used = s->mem.used;
+    out->disk_total = s->disk.total;
+    out->disk_used = s->disk.used;
+    out->rx_speed = s->net.rx_speed;
+    out->tx_speed = s->net.tx_speed;
+}
+
+/* Format the v1 report JSON from an already-collected sample. Returns the
+ * payload length, or -1 on truncation/encoding error. */
+static int report_format_v1(const report_sample_t *s, char *buf, size_t buf_len) {
     int len = snprintf(buf, buf_len,
         "{"
         "\"cpu\":{\"usage\":%.2f},"
@@ -200,16 +221,16 @@ int report_generate(const agent_config_t *config, monitoring_net_state_t *net_st
         "\"process\":%d,"
         "\"message\":\"\""
         "}",
-        cpu_usage,
-        mem.total, mem.used,
-        swap.total, swap.used,
-        load.load1, load.load5, load.load15,
-        disk.total, disk.used,
-        net.tx_speed, net.rx_speed,
-        net.tx_bytes, net.rx_bytes,
-        conn.tcp_count, conn.udp_count,
-        uptime,
-        process_count
+        s->cpu_usage,
+        s->mem.total, s->mem.used,
+        s->swap.total, s->swap.used,
+        s->load.load1, s->load.load5, s->load.load15,
+        s->disk.total, s->disk.used,
+        s->net.tx_speed, s->net.rx_speed,
+        s->net.tx_bytes, s->net.rx_bytes,
+        s->conn.tcp_count, s->conn.udp_count,
+        s->uptime,
+        s->process_count
     );
 
     /* Treat truncation or encoding error as failure: a truncated JSON body
@@ -218,6 +239,25 @@ int report_generate(const agent_config_t *config, monitoring_net_state_t *net_st
     if (len < 0 || (size_t)len >= buf_len) return -1;
 
     return len;
+}
+
+int report_generate_ex(const agent_config_t *config, monitoring_net_state_t *net_state,
+                       char *buf, size_t buf_len, report_status_metrics_t *status_out) {
+    if (!config || !buf || buf_len == 0) return -1;
+
+    report_sample_t s;
+    memset(&s, 0, sizeof(s));
+    report_collect_sample(config, net_state, &s);
+    if (status_out) {
+        report_fill_status_metrics(&s, status_out);
+    }
+
+    return report_format_v1(&s, buf, buf_len);
+}
+
+int report_generate(const agent_config_t *config, monitoring_net_state_t *net_state,
+                    char *buf, size_t buf_len) {
+    return report_generate_ex(config, net_state, buf, buf_len, NULL);
 }
 
 int report_generate_v2(const agent_config_t *config, monitoring_net_state_t *net_state,
@@ -257,16 +297,17 @@ int report_generate_v2(const agent_config_t *config, monitoring_net_state_t *net
     return offset;
 }
 
-int report_generate_v2_with_acks(const agent_config_t *config,
-                                 monitoring_net_state_t *net_state,
-                                 char *buf, size_t buf_len, const int *ack_ids,
-                                 int ack_count) {
+int report_generate_v2_with_acks_ex(const agent_config_t *config,
+                                    monitoring_net_state_t *net_state,
+                                    char *buf, size_t buf_len, const int *ack_ids,
+                                    int ack_count,
+                                    report_status_metrics_t *status_out) {
     if (!config || !buf || buf_len == 0) return -1;
     if (ack_count < 0) ack_count = 0;
 
     /* Generate the v1-style report JSON first. */
     char v1_buf[4096];
-    int v1_len = report_generate(config, net_state, v1_buf, sizeof(v1_buf));
+    int v1_len = report_generate_ex(config, net_state, v1_buf, sizeof(v1_buf), status_out);
     if (v1_len <= 0) return -1;
     v1_buf[sizeof(v1_buf) - 1] = '\0';
 
@@ -309,6 +350,14 @@ int report_generate_v2_with_acks(const agent_config_t *config,
     offset += n;
 
     return offset;
+}
+
+int report_generate_v2_with_acks(const agent_config_t *config,
+                                 monitoring_net_state_t *net_state,
+                                 char *buf, size_t buf_len, const int *ack_ids,
+                                 int ack_count) {
+    return report_generate_v2_with_acks_ex(config, net_state, buf, buf_len,
+                                           ack_ids, ack_count, NULL);
 }
 
 int report_generate_basic_info(const agent_config_t *config, char *buf, size_t buf_len) {
@@ -471,15 +520,34 @@ static int http_post_with_headers(const char *url, const char *payload, int igno
     
     /* Parse port with validation: atoi gives no error indication, so use strtol
      * and verify the value is in the valid port range [1, 65535]. On invalid
-     * input, keep the scheme default port (80 for http, 443 for https). */
-    char *colon = strchr(host, ':');
-    if (colon) {
-        *colon = '\0';
-        char *endptr = NULL;
-        long parsed_port = strtol(colon + 1, &endptr, 10);
-        if (endptr != colon + 1 && *endptr == '\0' &&
-            parsed_port >= 1 && parsed_port <= 65535) {
-            port = (int)parsed_port;
+     * input, keep the scheme default port (80 for http, 443 for https).
+     *
+     * Bracketed IPv6 literals ([2001:db8::1]:443) are handled by taking the
+     * port separator as the colon AFTER the closing bracket and stripping the
+     * brackets, since getaddrinfo() and SNI expect the bare address. */
+    char *bracket_close = strchr(host, ']');
+    if (bracket_close) {
+        char *colon = strchr(bracket_close, ':');
+        *bracket_close = '\0';
+        memmove(host, host + 1, strlen(host + 1) + 1);
+        if (colon) {
+            char *endptr = NULL;
+            long parsed_port = strtol(colon + 1, &endptr, 10);
+            if (endptr != colon + 1 && *endptr == '\0' &&
+                parsed_port >= 1 && parsed_port <= 65535) {
+                port = (int)parsed_port;
+            }
+        }
+    } else {
+        char *colon = strchr(host, ':');
+        if (colon) {
+            *colon = '\0';
+            char *endptr = NULL;
+            long parsed_port = strtol(colon + 1, &endptr, 10);
+            if (endptr != colon + 1 && *endptr == '\0' &&
+                parsed_port >= 1 && parsed_port <= 65535) {
+                port = (int)parsed_port;
+            }
         }
     }
     
@@ -840,4 +908,57 @@ int report_upload_ping_result(const agent_config_t *config,
 
     return http_post_with_headers(url, payload, config->ignore_unsafe_cert,
                                    headers[0] != '\0' ? headers : NULL);
+}
+
+void report_write_status_file(const agent_config_t *config,
+                              const report_status_metrics_t *m,
+                              bool connected) {
+    if (!config) return;
+
+    double mem_pct = 0.0, disk_pct = 0.0;
+    double cpu_pct = 0.0;
+    uint64_t rx = 0, tx = 0;
+    if (m) {
+        cpu_pct = m->cpu_usage;
+        if (m->mem_total > 0) {
+            mem_pct = (double)m->mem_used / (double)m->mem_total * 100.0;
+        }
+        if (m->disk_total > 0) {
+            disk_pct = (double)m->disk_used / (double)m->disk_total * 100.0;
+        }
+        rx = m->rx_speed;
+        tx = m->tx_speed;
+    }
+
+    char endpoint_escaped[MAX_ENDPOINT_LEN];
+    escape_json_string(config->endpoint, endpoint_escaped, sizeof(endpoint_escaped));
+
+    /* Write to a temp file and rename() so the LuCI reader never observes a
+     * truncated file (same atomic-publish pattern as netstatic persistence). */
+    static const char *const kTmpPath = KOMARI_PATH_STATUS_FILE ".tmp";
+    FILE *fp = fopen(kTmpPath, "w");
+    if (!fp) {
+        KOMARI_LOG_DEBUG("[Report] Failed to open status file %s", kTmpPath);
+        return;
+    }
+
+    int n = fprintf(fp,
+        "{\"connected\":%s,\"endpoint\":\"%s\",\"last_update\":%" PRIu64 ","
+        "\"cpu_usage\":%.2f,\"memory_usage\":%.2f,\"disk_usage\":%.2f,"
+        "\"rx_speed\":%" PRIu64 ",\"tx_speed\":%" PRIu64 "}",
+        connected ? "true" : "false",
+        endpoint_escaped,
+        (uint64_t)time(NULL),
+        cpu_pct, mem_pct, disk_pct, rx, tx);
+
+    if (n < 0 || fclose(fp) != 0) {
+        KOMARI_LOG_DEBUG("[Report] Failed to write status file %s", kTmpPath);
+        unlink(kTmpPath);
+        return;
+    }
+
+    if (rename(kTmpPath, KOMARI_PATH_STATUS_FILE) != 0) {
+        KOMARI_LOG_DEBUG("[Report] Failed to publish status file: %s", strerror(errno));
+        unlink(kTmpPath);
+    }
 }

@@ -46,4 +46,7 @@
 #define KOMARI_PATH_DOCKER_ENV       "/.dockerenv"
 #define KOMARI_PATH_CONTAINER_ENV    "/run/.containerenv"
 
+/* ---- LuCI status handoff (written by the agent, read by the controller) ---- */
+#define KOMARI_PATH_STATUS_FILE    "/tmp/komari-agent-c-status.json"
+
 #endif /* KOMARI_AGENT_C_PLATFORM_PATHS_H */

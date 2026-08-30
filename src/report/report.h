@@ -37,6 +37,21 @@ typedef struct {
 } report_data_t;
 
 /**
+ * Metrics subset published to the LuCI status file each report cycle.
+ * Filled by the *_ex report generators so the status file and the
+ * WebSocket payload reflect the same sample instant.
+ */
+typedef struct {
+    double cpu_usage;
+    uint64_t mem_total;
+    uint64_t mem_used;
+    uint64_t disk_total;
+    uint64_t disk_used;
+    uint64_t rx_speed;
+    uint64_t tx_speed;
+} report_status_metrics_t;
+
+/**
  * Generate the periodic status report JSON payload.
  *
  * @param config    Agent configuration
@@ -48,6 +63,16 @@ typedef struct {
  */
 int report_generate(const agent_config_t *config, monitoring_net_state_t *net_state,
                     char *buf, size_t buf_len);
+
+/**
+ * Same as report_generate, but optionally exports the sampled metrics for
+ * report_write_status_file. Metrics are collected exactly once per call so
+ * callers should pass the same status_out instance they hand to the status
+ * writer (CPU usage is delta-based; a second sample would halve the delta
+ * window and skew the value).
+ */
+int report_generate_ex(const agent_config_t *config, monitoring_net_state_t *net_state,
+                       char *buf, size_t buf_len, report_status_metrics_t *status_out);
 
 /**
  * Generate the periodic status report payload wrapped as a v2 JSON-RPC 2.0
@@ -89,6 +114,31 @@ int report_generate_v2_with_acks(const agent_config_t *config,
                                  monitoring_net_state_t *net_state,
                                  char *buf, size_t buf_len, const int *ack_ids,
                                  int ack_count);
+
+/**
+ * Same as report_generate_v2_with_acks, but optionally exports the sampled
+ * metrics for report_write_status_file (see report_generate_ex).
+ */
+int report_generate_v2_with_acks_ex(const agent_config_t *config,
+                                    monitoring_net_state_t *net_state,
+                                    char *buf, size_t buf_len, const int *ack_ids,
+                                    int ack_count,
+                                    report_status_metrics_t *status_out);
+
+/**
+ * Atomically publish the LuCI status snapshot to KOMARI_PATH_STATUS_FILE
+ * (/tmp/komari-agent-c-status.json). The LuCI controller reads this file to
+ * display connection state and live metrics. The write goes through a temp
+ * file + rename() so the reader never observes a partial file.
+ *
+ * @param config    Agent configuration (endpoint is embedded in the file)
+ * @param m         Sampled metrics; may be NULL to publish zeros (used when
+ *                  the connection is down and no fresh sample exists)
+ * @param connected Whether the panel WebSocket is currently connected
+ */
+void report_write_status_file(const agent_config_t *config,
+                              const report_status_metrics_t *m,
+                              bool connected);
 
 /**
  * Generate the basic (one-time) system info JSON payload.
