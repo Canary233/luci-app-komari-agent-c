@@ -10,19 +10,19 @@
 
 一个为 OpenWrt 路由器设计的轻量级监控代理。这是 [komari-monitor](https://github.com/komari-monitor/komari-agent) 的 C 语言重写版本。
 
-## ✨ 核心特性
+## 核心特性
 
-- 🚀 **轻量高效**：二进制文件仅 ~100KB，内存占用 < 3MB
-- 📊 **全面监控**：CPU、内存、磁盘、网络、进程、连接数
-- 🔒 **TLS 加密**：支持 wss:// 协议，安全传输监控数据
-- 🔌 **WebSocket 通信**：实时数据上报，符合 RFC 6455 标准
-- 💻 **Web SSH**：支持远程终端访问
-- 📈 **流量统计**：按月统计网卡流量
-- 🏓 **Ping 任务**：支持 ICMP、TCP、HTTP 三种模式
-- 🔄 **自动重连**：网络断开后自动恢复连接
-- 🖥️ **LuCI 前端**：提供 Web 配置界面，支持配置管理、实时状态监控、日志查看和连接测试
+- **轻量高效**：二进制文件仅 ~100KB，内存占用 < 3MB
+- **全面监控**：CPU、内存、磁盘、网络、进程、连接数
+- **TLS 加密**：支持 wss:// 协议，安全传输监控数据
+- **WebSocket 通信**：实时数据上报，符合 RFC 6455 标准
+- **Web SSH**：支持远程终端访问
+- **流量统计**：按月统计网卡流量
+- **Ping 任务**：支持 ICMP、TCP、HTTP 三种模式
+- **自动重连**：网络断开后自动恢复连接
+- **LuCI 前端**：提供 Web 配置界面，支持配置管理、实时状态监控、日志查看和连接测试
 
-## 📦 快速安装
+## 快速安装
 
 > 将下方 `<version>` 替换为最新 release 版本号（见 [Releases 页面](https://github.com/zhz8888/luci-app-komari-agent-c/releases)），`<arch>` 替换为目标架构。
 
@@ -55,7 +55,7 @@ tar -xzf komari-agent-c-<version>-linux-<arch>.tar.gz
 sudo cp komari-agent-c /usr/local/bin/
 ```
 
-## 🚀 运行
+## 运行
 
 ### 最小启动示例
 
@@ -64,7 +64,7 @@ komari-agent-c --token <TOKEN> --endpoint <URL>
 ```
 
 - `<TOKEN>`：在 Komari 面板添加节点时获取的认证 Token
-- `<URL>`：面板的 WebSocket 地址，例如 `wss://panel.example.com/ws/client`
+- `<URL>`：面板基础地址，必须以 `https://` 或 `http://` 开头（如 `https://panel.example.com`）；agent 内部自动拼接 WebSocket 与 HTTP 上报端点，无需（也不应）携带路径或使用 `wss://` 前缀
 
 ### 常用启动参数
 
@@ -72,12 +72,12 @@ komari-agent-c --token <TOKEN> --endpoint <URL>
 |------|------|
 | `-t, --token <token>` | 认证 Token（必填） |
 | `-e, --endpoint <url>` | 面板服务器 URL（必填） |
-| `-i, --interval <seconds>` | 上报间隔秒数，默认 1.0 |
+| `-i, --interval <seconds>` | 上报间隔秒数，默认 1.0（最小 1.0，低于会被钳制） |
 | `-d, --dns <server>` | 自定义 DNS 服务器 |
 | `-c, --config <file>` | JSON 配置文件路径 |
 | `-k, --insecure` | 忽略 TLS 证书错误（不推荐在生产环境使用） |
 | `-s, --disable-ssh` | 禁用 Web SSH 远程终端 |
-| `-v, --verbose` | 详细日志输出 |
+| `-v, --verbose` | 启用 DEBUG 级别详细日志 |
 | `-h, --help` | 显示帮助信息 |
 
 ### systemd 集成示例（非 OpenWrt 系统）
@@ -116,9 +116,9 @@ OpenWrt 安装 ipk/apk 后通过 `/etc/init.d/komari-agent-c` 管理：
 /etc/init.d/komari-agent-c stop     # 停止
 ```
 
-## ⚙️ 配置说明
+## 配置说明
 
-Agent 支持四种配置途径，优先级从低到高依次为：
+Agent 支持五种配置途径，优先级从低到高依次为：
 
 1. **默认值**（`config_init`）
 2. **JSON 配置文件**（`--config <file>` 指定路径，或 `AGENT_CONFIG_FILE` 环境变量）
@@ -132,14 +132,14 @@ Agent 支持四种配置途径，优先级从低到高依次为：
 |------|------|--------|----------|----------|------|
 | `token` | string | 空 | `AGENT_TOKEN` | `--token` | 认证 Token（必填） |
 | `endpoint` | string | 空 | `AGENT_ENDPOINT` | `--endpoint` | 面板服务器 URL（必填） |
-| `interval` | float | `1.0` | `AGENT_INTERVAL` | `--interval` | 上报间隔（秒） |
+| `interval` | float | `1.0` | `AGENT_INTERVAL` | `--interval` | 上报间隔（秒，最小 1.0） |
 | `custom_dns` | string | 空 | `AGENT_CUSTOM_DNS` | `--dns` | 自定义 DNS 服务器 |
 | `ignore_unsafe_cert` | bool | `false` | `AGENT_IGNORE_UNSAFE_CERT` | `--insecure` | 忽略 TLS 证书错误 |
 | `disable_web_ssh` | bool | `false` | `AGENT_DISABLE_WEB_SSH` | `--disable-ssh` | 禁用 Web SSH |
 | `max_retries` | int | `5` | `AGENT_MAX_RETRIES` | - | 最大重连次数 |
 | `reconnect_interval` | int | `5` | `AGENT_RECONNECT_INTERVAL` | - | 重连间隔（秒） |
 | `info_report_interval` | int | `30` | `AGENT_INFO_REPORT_INTERVAL` | - | 系统信息上报间隔（秒） |
-| `month_rotate` | int | `0` | `AGENT_MONTH_ROTATE` | - | 流量统计月份切换日（0=自动） |
+| `month_rotate` | int | `0` | `AGENT_MONTH_ROTATE` | - | 流量统计月份切换日（0=禁用流量统计） |
 | `protocol_version` | int | `2` | `AGENT_PROTOCOL_VERSION` | - | 协议版本（1 或 2） |
 | `disable_auto_update` | bool | `false` | `AGENT_DISABLE_AUTO_UPDATE` | - | 禁用自动更新检查 |
 | `disable_compression` | bool | `false` | `AGENT_DISABLE_COMPRESSION` | - | 禁用 v2 协议 gzip 压缩 |
@@ -149,6 +149,8 @@ Agent 支持四种配置途径，优先级从低到高依次为：
 | `include_mountpoints` | string | 空 | `AGENT_INCLUDE_MOUNTPOINTS` | - | 包含的挂载点（逗号分隔） |
 | `custom_ipv4` | string | 空 | `AGENT_CUSTOM_IPV4` | - | 自定义 IPv4 地址 |
 | `custom_ipv6` | string | 空 | `AGENT_CUSTOM_IPV6` | - | 自定义 IPv6 地址 |
+| `cf_access_client_id` | string | 空 | `AGENT_CF_ACCESS_CLIENT_ID` | - | Cloudflare Access 客户端 ID（HTTP 上报附带认证头） |
+| `cf_access_client_secret` | string | 空 | `AGENT_CF_ACCESS_CLIENT_SECRET` | - | Cloudflare Access 客户端密钥 |
 | `auto_discovery_key` | string | 空 | `AGENT_AUTO_DISCOVERY_KEY` | - | 自动发现注册密钥 |
 
 > **注**：布尔类型环境变量接受 `true`/`false`、`1`/`0`、`on`/`off` 等常见格式。
@@ -160,7 +162,7 @@ Agent 支持四种配置途径，优先级从低到高依次为：
 ```json
 {
   "token": "your-token-here",
-  "endpoint": "wss://panel.example.com/ws/client",
+  "endpoint": "https://panel.example.com",
   "interval": 2.0,
   "max_retries": 10,
   "reconnect_interval": 10,
@@ -190,7 +192,7 @@ UCI 配置文件位于 `/etc/config/komari-agent-c`，字段名与上表一致�
 ```sh
 config komari-agent-c 'komari-agent-c'
     option token 'your-token-here'
-    option endpoint 'wss://panel.example.com/ws/client'
+    option endpoint 'https://panel.example.com'
     option interval '1.0'
     option protocol_version '2'
     option enable_gpu '0'
@@ -200,12 +202,12 @@ config komari-agent-c 'komari-agent-c'
 
 ```sh
 uci set komari-agent-c.komari-agent-c.token='your-token'
-uci set komari-agent-c.komari-agent-c.endpoint='wss://panel.example.com/ws/client'
+uci set komari-agent-c.komari-agent-c.endpoint='https://panel.example.com'
 uci commit komari-agent-c
 /etc/init.d/komari-agent-c restart
 ```
 
-## 🛠️ 本地构建
+## 本地构建
 
 ### 标准构建（CMake）
 
@@ -248,6 +250,9 @@ cmake --preset analyze      # clang-tidy 静态分析
 
 # 运行单元测试
 ./scripts/docker-build.sh test
+
+# 供应链锁定：--build-arg BASE_IMAGE=<digest 锁定镜像>（流程见 docker/README.md）
+./scripts/docker-build.sh amd64 --build-arg BASE_IMAGE=ubuntu:24.04@sha256:<digest>
 ```
 
 详见 [docker/README.md](docker/README.md)。
@@ -257,31 +262,34 @@ cmake --preset analyze      # clang-tidy 静态分析
 ```bash
 cmake -B build -DBUILD_TESTING=ON && cmake --build build
 ctest --test-dir build --output-on-failure
+
+# 或使用 Docker 运行（无需本地工具链，CI 采用同一方式）
+./scripts/docker-build.sh test
 ```
 
-## 📋 系统要求
+## 系统要求
 
 - OpenWrt 24.10 或更高版本（CI 测试覆盖 24.10.6 与 25.12.2）
 - 最低内存：64MB
-- 必需依赖：`libpthread`、`libopenssl`、`librt`、`zlib`
+- 必需依赖：`libpthread`、`libopenssl`、`librt`、`zlib`、`libcap`（非 root ICMP 权限）
 
-## 🔐 安全建议
+## 安全建议
 
-1. **使用 HTTPS**：建议 endpoint 使用 HTTPS/WSS 协议
+1. **使用 HTTPS**：endpoint 必须以 HTTPS/HTTP 开头，生产环境建议使用 HTTPS
 2. **保护 Token**：不要在公开场合泄露 Token
 3. **证书校验**：生产环境不要忽略证书错误
 4. **禁用 Web SSH**：如不需要远程终端，建议禁用
 5. **定期更新**：保持 OpenSSL 依赖为最新版本
 
-## 🤝 贡献
+## 贡献
 
 欢迎提交 Issue 和 Pull Request。提交前请阅读 [贡献指南](CONTRIBUTING.md)（[English](CONTRIBUTING.en.md)），了解 Git 提交规范、代码规范与测试要求。
 
-## 📄 许可证
+## 许可证
 
 [MIT 许可证](LICENSE)
 
-## 🔗 相关链接
+## 相关链接
 
 - [Komari Monitor 面板](https://github.com/komari-monitor/komari-monitor)
 - [Go 版本 Agent](https://github.com/komari-monitor/komari-agent)

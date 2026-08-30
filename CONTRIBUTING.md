@@ -17,14 +17,14 @@
 采用 [Conventional Commits](https://www.conventionalcommits.org/) 格式：
 
 ```
-<type>(<scope>): <subject>  # type/scope 英文，subject 中文或英文
+<type>(<scope>): <subject>
 
-<body>  # 中文或英文，分点描述具体修改
-
-<footer>
+- <变更条目 1>
+- <变更条目 2>
+  <长条目续行>
 ```
 
-> **提交信息语言**：`type` 与 `scope` 必须使用英文；`subject` 与 `body` 可使用中文或英文，建议与同一提交内已使用的语言保持一致，且同一仓库的历史提交风格保持连贯。
+> **提交信息语言**：`type` 与 `scope` 必须使用英文；`subject` 与 `body` 使用中文（技术名词、标识符保留英文）。标题以顿号/并列结构概括 2-4 个要点；正文使用 `- ` 逐条变更列表，每条说明「做了什么 + 为什么」；不引用问题编号。完整规范见 [AGENTS.md](AGENTS.md)。
 
 ### 提交类型（type）
 
@@ -45,13 +45,13 @@ fix(core): 修复 WebSocket 重连时未清理 fragment buffer 的问题
 - 修复后 v2 协议长连接断开重连不再出现解析失败
 ```
 
-英文提交信息示例：
+跨模块多点修复示例（标题概括要点、正文逐条对照）：
 
 ```
-docs(openwrt): add 4 missing options to init validate_section
+fix(openwrt): 修复系统用户创建、procd 环境注入与令牌暴露
 
-- Add protocol_version, disable_compression, disable_auto_update, auto_discovery_key to validate_section
-- Pass options without CLI flags via procd_set_param env in start_instance
+- postinst 改用 busybox 兼容方式创建 komari 系统用户，原版 OpenWrt 不提供 groupadd/useradd
+- 代理环境变量合并为单次 procd_set_param env 注入，分次调用仅最后一对生效
 ```
 
 ## 代码规范
@@ -122,7 +122,7 @@ ctest --test-dir build --output-on-failure
 
 ## 测试规范
 
-- 使用 [Unity](https://github.com/ThrowTheSwitch/Unity) v2.5.2 框架编写单元测试
+- 使用 [Unity](https://github.com/ThrowTheSwitch/Unity) v2.6.1 框架编写单元测试
 - 测试文件放置在 `tests/` 目录下，命名格式 `test_<module>.c`
 - `KOMARI_BUILD_TESTS` 与 `BUILD_TESTING` 两个 CMake 选项同步（见 `cmake/BuildOptions.cmake`）
 - 新增功能或修复 bug 时，应附上对应单元测试

@@ -17,14 +17,14 @@ Thank you for considering a contribution to Komari Agent (C language version)! T
 We follow the [Conventional Commits](https://www.conventionalcommits.org/) format:
 
 ```
-<type>(<scope>): <subject>  # type/scope in English, subject in Chinese or English
+<type>(<scope>): <subject>
 
-<body>  # Chinese or English, bullet points describing specific changes
-
-<footer>
+- <change entry 1>
+- <change entry 2>
+  <continuation line for long entries>
 ```
 
-> **Commit message language**: `type` and `scope` must be in English; `subject` and `body` may be written in either Chinese or English. Within a single commit, keep the language consistent, and align with the repository's existing commit history style.
+> **Commit message language**: `type` and `scope` must be in English; `subject` and `body` are written in Chinese (technical terms and identifiers stay in English). The subject summarizes 2-4 key points joined by `、`; the body uses a `- ` bullet list where each entry states what was done and why; do not reference issue numbers. See [AGENTS.md](AGENTS.md) for the full conventions.
 
 ### Commit types (type)
 
@@ -45,13 +45,13 @@ fix(core): 修复 WebSocket 重连时未清理 fragment buffer 的问题
 - 修复后 v2 协议长连接断开重连不再出现解析失败
 ```
 
-English commit message example:
+Multi-area fix example (subject summarizes the key points, body maps each change):
 
 ```
-docs(openwrt): add 4 missing options to init validate_section
+fix(openwrt): 修复系统用户创建、procd 环境注入与令牌暴露
 
-- Add protocol_version, disable_compression, disable_auto_update, auto_discovery_key to validate_section
-- Pass options without CLI flags via procd_set_param env in start_instance
+- postinst 改用 busybox 兼容方式创建 komari 系统用户，原版 OpenWrt 不提供 groupadd/useradd
+- 代理环境变量合并为单次 procd_set_param env 注入，分次调用仅最后一对生效
 ```
 
 ## Code Style
@@ -122,7 +122,7 @@ The project provides 9 standardized presets (see `CMakePresets.json`):
 
 ## Testing Conventions
 
-- Use the [Unity](https://github.com/ThrowTheSwitch/Unity) v2.5.2 framework for unit tests
+- Use the [Unity](https://github.com/ThrowTheSwitch/Unity) v2.6.1 framework for unit tests
 - Test files go in the `tests/` directory, named `test_<module>.c`
 - `KOMARI_BUILD_TESTS` and `BUILD_TESTING` CMake options are kept in sync (see `cmake/BuildOptions.cmake`)
 - Attach corresponding unit tests when adding features or fixing bugs

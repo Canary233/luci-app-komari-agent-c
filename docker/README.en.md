@@ -154,6 +154,8 @@ UBUNTU_DIGEST=$(docker buildx imagetools inspect ubuntu:24.04 --format '{{.Manif
 ./scripts/docker-build.sh amd64 --build-arg BASE_IMAGE=ubuntu:24.04@${UBUNTU_DIGEST}
 ```
 
+`docker-build.sh` parses `--build-arg KEY=VAL` and exports it as a compose interpolation variable, forwarded through the `BASE_IMAGE` build arg of every service (Ubuntu services default to `ubuntu:24.04`, legacy services to `debian:bookworm-slim`).
+
 ### Upgrading digests
 
 1. Run `scripts/lock-docker-images.sh` to get the latest digests
@@ -165,7 +167,7 @@ UBUNTU_DIGEST=$(docker buildx imagetools inspect ubuntu:24.04 --format '{{.Manif
 After a CI build, record the image digest to an artifact:
 
 ```bash
-docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' komari-build:latest
+docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' komari-agent-c-build-amd64
 ```
 
 ## Troubleshooting

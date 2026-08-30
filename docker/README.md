@@ -152,6 +152,8 @@ UBUNTU_DIGEST=$(docker buildx imagetools inspect ubuntu:24.04 --format '{{.Manif
 ./scripts/docker-build.sh amd64 --build-arg BASE_IMAGE=ubuntu:24.04@${UBUNTU_DIGEST}
 ```
 
+`docker-build.sh` 会解析 `--build-arg KEY=VAL` 并导出为 compose 插值变量，经各服务 build.args 中的 `BASE_IMAGE` 透传（Ubuntu 服务默认 `ubuntu:24.04`，legacy 服务默认 `debian:bookworm-slim`）。
+
 ### 升级 digest 流程
 
 1. 运行 `scripts/lock-docker-images.sh` 获取最新 digest
@@ -163,7 +165,7 @@ UBUNTU_DIGEST=$(docker buildx imagetools inspect ubuntu:24.04 --format '{{.Manif
 CI 构建后，通过以下命令记录本次构建所用镜像 digest 到 artifact：
 
 ```bash
-docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' komari-build:latest
+docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' komari-agent-c-build-amd64
 ```
 
 ## 常见问题
