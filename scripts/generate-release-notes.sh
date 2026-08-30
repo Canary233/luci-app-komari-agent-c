@@ -12,13 +12,21 @@ VERSION="$1"
 REPOSITORY="$2"
 
 # ---- Find previous tag ----
+# The tag list is sorted newest-first, so the previous tag is the entry
+# immediately AFTER the current tag. Breaking at the current tag (the old
+# logic) left PREVIOUS_TAG empty and made the changelog span the entire
+# repository history.
 CURRENT_TAG="v${VERSION}"
 PREVIOUS_TAG=""
+found_current=0
 while IFS= read -r tag; do
-    if [ "$tag" = "$CURRENT_TAG" ]; then
+    if [ "$found_current" -eq 1 ]; then
+        PREVIOUS_TAG="$tag"
         break
     fi
-    PREVIOUS_TAG="$tag"
+    if [ "$tag" = "$CURRENT_TAG" ]; then
+        found_current=1
+    fi
 done < <(git tag --sort=-version:refname 2>/dev/null || echo "")
 
 if [ -n "$PREVIOUS_TAG" ]; then

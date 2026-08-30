@@ -238,6 +238,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        # Full history (including tags) is required so
+        # generate-release-notes.sh can resolve the previous release tag and
+        # produce a scoped changelog instead of falling back to HEAD.
+        with:
+          fetch-depth: 0
 
       - name: Download OpenWrt packages
         if: needs.build-openwrt.result == 'success'
