@@ -899,6 +899,22 @@ int ping_task_execute(const char *target, const char *type, ping_task_config_t *
                 retry_latency = ping_task_http(target, timeout_ms, custom_dns, ignore_cert);
             }
 
+            /* TCP handshake retransmission heuristic (mirrors the Go
+             * reference server/task.go): when the first measurement is
+             * high and a retry comes back at least 800 ms faster, the
+             * first sample almost certainly absorbed a TCP SYN
+             * retransmission rather than real network latency. Adopt the
+             * retry value and stop retrying. */
+            if (retry_latency >= 0 &&
+                strcmp(type, PING_TYPE_TCP) == 0 &&
+                latency - retry_latency > PING_RETRANSMISSION_DELTA_MS) {
+                KOMARI_LOG_INFO("TCP first sample likely absorbed a handshake "
+                                "retransmission (%lld ms vs %lld ms), using retry value",
+                                (long long)latency, (long long)retry_latency);
+                latency = retry_latency;
+                break;
+            }
+
             if (retry_latency >= 0 && retry_latency <= high_latency_threshold) {
                 latency = retry_latency;
                 KOMARI_LOG_INFO("Retry %d succeeded with normal latency (%lld ms)", i + 1, (long long)latency);

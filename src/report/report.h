@@ -162,6 +162,21 @@ int report_generate_basic_info(const agent_config_t *config, char *buf, size_t b
 int report_generate_basic_info_v2(const agent_config_t *config, char *buf, size_t buf_len);
 
 /**
+ * Upload the basic info payload (already wrapped as a v2 JSON-RPC 2.0
+ * notification by report_generate_basic_info_v2) via HTTP POST to
+ * <endpoint>/api/clients/v2/rpc?token=..., mirroring the Go reference
+ * (server/basicInfo.go). The body is gzip-compressed unless the agent is
+ * configured with disable_compression.
+ *
+ * @param config      Agent configuration
+ * @param payload     JSON payload bytes
+ * @param payload_len Payload length
+ * @return 0 on success (2xx response), -1 on failure
+ */
+int report_upload_basic_info(const agent_config_t *config,
+                             const char *payload, size_t payload_len);
+
+/**
  * Upload a task execution result to the panel server.
  *
  * @param config Agent configuration

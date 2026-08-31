@@ -18,6 +18,7 @@ typedef struct {
     char cpu_name[128];
     char cpu_arch[32];
     int cpu_cores;
+    int cpu_physical_cores;
     double cpu_usage;
 } cpu_info_t;
 

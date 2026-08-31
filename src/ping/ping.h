@@ -20,6 +20,10 @@
 #define PING_HIGH_LATENCY_THRESHOLD_MS 1000
 #define PING_HIGH_LATENCY_RETRIES 3
 
+/* A TCP retry at least this many ms faster than the first sample indicates the
+ * first measurement absorbed a SYN retransmission. Mirrors the Go reference. */
+#define PING_RETRANSMISSION_DELTA_MS 800
+
 typedef struct {
     uint32_t task_id;
     char ping_type[16];

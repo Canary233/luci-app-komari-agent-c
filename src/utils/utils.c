@@ -62,7 +62,21 @@ static void utils_close_inherited_fds(const int lowfd) {
  * Redirects the child's stdout and stderr into a pipe, reads the output in
  * the parent, and reports the child exit status. Returns 0 on success (the
  * command may still have failed; check *exit_code), -1 on pipe/fork failure. */
+static int utils_exec_capture_stdin(char *const argv[], const char *stdin_data,
+                                    size_t stdin_len, char *output,
+                                    size_t output_size, int *exit_code);
+
 static int utils_exec_capture(char *const argv[], char *output, size_t output_size, int *exit_code) {
+    return utils_exec_capture_stdin(argv, NULL, 0, output, output_size, exit_code);
+}
+
+/* Core implementation. When stdin_data is non-NULL, the child's stdin is a
+ * pipe fed with those bytes and closed, enabling "sh -s" style execution
+ * where the full command text arrives on stdin (mirrors the Go reference
+ * server/task.go which execs "sh -s" with the command on stdin). */
+static int utils_exec_capture_stdin(char *const argv[], const char *stdin_data,
+                                    size_t stdin_len, char *output,
+                                    size_t output_size, int *exit_code) {
     int pipefd[2];
     if (pipe(pipefd) != 0) {
         KOMARI_LOG_WARN("exec_capture: pipe() failed: %s", strerror(errno));
@@ -78,9 +92,29 @@ static int utils_exec_capture(char *const argv[], char *output, size_t output_si
         return -1;
     }
 
+    int stdin_pipe[2] = {-1, -1};
+    if (stdin_data) {
+        if (pipe(stdin_pipe) != 0) {
+            int saved_errno = errno;
+            close(pipefd[0]);
+            close(pipefd[1]);
+            KOMARI_LOG_WARN("exec_capture: stdin pipe() failed: %s", strerror(saved_errno));
+            return -1;
+        }
+    }
+
     if (pid == 0) {
         /* Child: redirect stdout and stderr to the pipe write end */
         close(pipefd[0]);
+        if (stdin_data) {
+            close(stdin_pipe[1]);
+            if (dup2(stdin_pipe[0], STDIN_FILENO) < 0) {
+                _exit(127);
+            }
+            if (stdin_pipe[0] != STDIN_FILENO) {
+                close(stdin_pipe[0]);
+            }
+        }
         if (dup2(pipefd[1], STDOUT_FILENO) < 0) {
             _exit(127);
         }
@@ -106,6 +140,24 @@ static int utils_exec_capture(char *const argv[], char *output, size_t output_si
      * for data even if a grandchild still holds the pipe open. Commands
      * that legitimately run for a long time keep the loop alive. */
     close(pipefd[1]);
+
+    /* Feed the child's stdin (sh -s command text) and close the pipe so the
+     * shell sees EOF and starts executing. Write failures are non-fatal:
+     * a short write still delivers a prefix, and the shell runs what it
+     * received. */
+    if (stdin_data) {
+        close(stdin_pipe[0]);
+        size_t off = 0;
+        while (off < stdin_len) {
+            ssize_t w = write(stdin_pipe[1], stdin_data + off, stdin_len - off);
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            off += (size_t)w;
+        }
+        close(stdin_pipe[1]);
+    }
 
     int status = 0;
     pid_t reaped = 0;
@@ -365,6 +417,15 @@ int utils_exec_command_argv(char *const argv[], char *output, size_t output_size
     KOMARI_LOG_DEBUG("exec_command_argv: running '%s'", argv[0]);
 
     return utils_exec_capture(argv, output, output_size, exit_code);
+}
+
+int utils_exec_command_argv_stdin(char *const argv[], const char *stdin_data,
+                                  size_t stdin_len, char *output,
+                                  size_t output_size, int *exit_code) {
+    if (!argv || !argv[0]) return -1;
+
+    return utils_exec_capture_stdin(argv, stdin_data, stdin_len,
+                                    output, output_size, exit_code);
 }
 
 int utils_mkdir_p(const char *path) {

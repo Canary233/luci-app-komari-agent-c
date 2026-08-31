@@ -48,6 +48,7 @@ static int g_cpu_sample_initialized = 0;
  * on reboot or CPU hotplug; re-reading /proc/cpuinfo every second is pure
  * waste. Populate once on the first call. */
 static cpu_info_t g_cpu_invariants;
+static int g_cpu_physical_cores = 0; /* 0 until probed; 1 when /proc/cpuinfo lacks physical id */
 static int g_cpu_invariants_cached = 0;
 
 /* Tiered sampling caches. disk/connections/process_count change slowly and
@@ -133,6 +134,58 @@ int monitoring_get_cpu_info(cpu_info_t *info) {
         g_cpu_invariants.cpu_cores = sysconf(_SC_NPROCESSORS_ONLN);
         if (g_cpu_invariants.cpu_cores <= 0) g_cpu_invariants.cpu_cores = 1;
 
+        /* Count physical cores as unique (physical id, core id) pairs in
+         * /proc/cpuinfo, mirroring gopsutil cpu.Counts(false). ARM SoCs and
+         * older kernels may omit these fields; fall back to the logical
+         * count (matching the Go behavior when the pairing is unknown). */
+        {
+            FILE *pf = fopen(KOMARI_PATH_PROC_CPUINFO, "r");
+            if (pf) {
+                char pline[256];
+                int have_ids = 0;
+                long phys = -1, core = -1;
+                /* Small fixed-size registry: SMP systems rarely exceed this
+                 * many unique pairs; a linear scan over the table keeps the
+                 * code allocation-free. */
+                enum { MAX_PHYS = 512 };
+                static long seen[MAX_PHYS][2];
+                int seen_n = 0;
+                while (fgets(pline, sizeof(pline), pf)) {
+                    if (strncmp(pline, "physical id", 11) == 0) {
+                        const char *colon = strchr(pline, ':');
+                        if (colon) phys = strtol(colon + 1, NULL, 10), have_ids |= 1;
+                    } else if (strncmp(pline, "core id", 7) == 0) {
+                        const char *colon = strchr(pline, ':');
+                        if (colon) core = strtol(colon + 1, NULL, 10), have_ids |= 2;
+                    } else if (strncmp(pline, "processor", 9) == 0) {
+                        /* A new logical CPU starts: flush the pending pair. */
+                        if (have_ids == 3 && seen_n < MAX_PHYS) {
+                            int dup = 0;
+                            for (int k = 0; k < seen_n; k++) {
+                                if (seen[k][0] == phys && seen[k][1] == core) { dup = 1; break; }
+                            }
+                            if (!dup) { seen[seen_n][0] = phys; seen[seen_n][1] = core; seen_n++; }
+                        }
+                        have_ids = 0;
+                        phys = -1;
+                        core = -1;
+                    }
+                }
+                /* Flush the final processor block (no trailing entry). */
+                if (have_ids == 3 && seen_n < MAX_PHYS) {
+                    int dup = 0;
+                    for (int k = 0; k < seen_n; k++) {
+                        if (seen[k][0] == phys && seen[k][1] == core) { dup = 1; break; }
+                    }
+                    if (!dup) { seen[seen_n][0] = phys; seen[seen_n][1] = core; seen_n++; }
+                }
+                fclose(pf);
+                g_cpu_physical_cores = (seen_n > 0) ? seen_n : g_cpu_invariants.cpu_cores;
+            } else {
+                g_cpu_physical_cores = g_cpu_invariants.cpu_cores;
+            }
+        }
+
 #if defined(__aarch64__)
         strcpy(g_cpu_invariants.cpu_arch, "arm64");
 #elif defined(__arm__)
@@ -175,6 +228,7 @@ int monitoring_get_cpu_info(cpu_info_t *info) {
     }
 
     info->cpu_cores = g_cpu_invariants.cpu_cores;
+    info->cpu_physical_cores = g_cpu_physical_cores;
     strncpy(info->cpu_arch, g_cpu_invariants.cpu_arch, sizeof(info->cpu_arch) - 1);
     info->cpu_arch[sizeof(info->cpu_arch) - 1] = '\0';
     strncpy(info->cpu_name, g_cpu_invariants.cpu_name, sizeof(info->cpu_name) - 1);

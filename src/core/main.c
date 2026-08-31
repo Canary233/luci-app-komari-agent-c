@@ -545,75 +545,11 @@ static int establish_terminal_connection(const char *token, const char *request_
     return 0;
 }
 
-/**
- * Parse a command string into a NULL-terminated argv array without invoking a
- * shell. Tokens are split on whitespace; runs enclosed in single or double
- * quotes are kept together (the surrounding quotes are removed). No escape
- * sequence processing is performed, so shell metacharacters (|, >, ;, ...) end
- * up as literal argument characters instead of being interpreted.
- *
- * On success returns a malloc'd argv array and stores a malloc'd buffer
- * (holding the tokenized string) in *buf_out. The caller MUST free(argv) and
- * free(*buf_out). Returns NULL on allocation failure or when no tokens are
- * present.
- */
-static char **parse_exec_command_argv(const char *cmd, char **buf_out) {
-    if (!cmd || !buf_out) return NULL;
 
-    size_t len = strlen(cmd);
-    char *buf = malloc(len + 1);
-    if (!buf) return NULL;
-    memcpy(buf, cmd, len + 1);
-
-    /* Upper bound on tokens: every token needs at least one separator */
-    size_t max_argv = len / 2 + 2;
-    char **argv = calloc(max_argv, sizeof(char *));
-    if (!argv) {
-        free(buf);
-        return NULL;
-    }
-
-    int argc = 0;
-    char *p = buf;
-    while (*p) {
-        /* Skip leading whitespace */
-        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-        if (*p == '\0') break;
-
-        char *token_start = p;
-        char *write = p;
-        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') {
-            if (*p == '"') {
-                p++;
-                while (*p && *p != '"') {
-                    *write++ = *p++;
-                }
-                if (*p == '"') p++;
-            } else if (*p == '\'') {
-                p++;
-                while (*p && *p != '\'') {
-                    *write++ = *p++;
-                }
-                if (*p == '\'') p++;
-            } else {
-                *write++ = *p++;
-            }
-        }
-        *write = '\0';
-        argv[argc++] = token_start;
-        if (*p) p++;
-    }
-    argv[argc] = NULL;
-
-    if (argc == 0) {
-        free(argv);
-        free(buf);
-        return NULL;
-    }
-
-    *buf_out = buf;
-    return argv;
-}
+/* Upper bound for captured exec output uploaded back to the panel. The v2
+ * result payload allows up to 64 KiB; the escaped form can exceed the raw
+ * bytes, so the raw capture stays well below it. */
+#define EXEC_OUTPUT_MAX (32 * 1024)
 
 /**
  * Handle incoming WebSocket messages from the panel.
@@ -635,53 +571,63 @@ static void handle_ws_message(ws_client_t *client, const ws_message_t *msg) {
             KOMARI_LOG_INFO("[Terminal] Web SSH is disabled");
         }
     } else if (strcmp(msg->message, "exec") == 0) {
-        char output[8192] = "";
+        char output[EXEC_OUTPUT_MAX] = "";
         int exit_code = 0;
 
-        /* Parse the command into an argv array and execute it directly via
-         * execvp() to avoid shell injection (msg->exec_command originates from
-         * the WebSocket panel and is untrusted input). */
-        char *argv_buf = NULL;
-        char **argv = parse_exec_command_argv(msg->exec_command, &argv_buf);
-        if (argv) {
-            /* Log only the command name at DEBUG level to avoid leaking
-             * sensitive parameters into syslog. */
-            KOMARI_LOG_DEBUG("[Task] Executing: %s (Task ID: %s)", argv[0], msg->exec_task_id);
-
-            /* Reject execution from sensitive or traversed paths to shrink
-             * the attack surface (e.g. /proc/self/exe, ../tmp/payload). */
-            const char *cmd_path = argv[0];
-            if (strncmp(cmd_path, "/proc/", 6) == 0 ||
-                strncmp(cmd_path, "/sys/", 5) == 0 ||
-                strstr(cmd_path, "..") != NULL) {
-                KOMARI_LOG_WARN("[Task] Rejected exec from restricted path (Task ID: %s)",
-                                msg->exec_task_id);
-                /* Report the rejection so the panel does not wait forever
-                 * for a task result that will never arrive. Exit code 126
-                 * mirrors the shell's "command found but not executable"
-                 * convention. */
-                report_upload_task_result(&g_config, msg->exec_task_id,
-                                          "exec: command path rejected", 126,
-                                          utils_get_current_timestamp());
-            } else if (utils_exec_command_argv(argv, output, sizeof(output), &exit_code) == 0) {
-                report_upload_task_result(&g_config, msg->exec_task_id, output, exit_code,
-                                           utils_get_current_timestamp());
-            } else {
-                /* fork()/pipe() failure inside the exec helper: report a
-                 * synthetic failure result (exit code 127) so the panel's
-                 * task does not hang. */
-                KOMARI_LOG_ERROR("[Task] Failed to execute command (Task ID: %s)",
-                                 msg->exec_task_id);
-                report_upload_task_result(&g_config, msg->exec_task_id,
-                                          "exec: failed to execute command", 127,
-                                          utils_get_current_timestamp());
-            }
-            free(argv);
-            free(argv_buf);
-        } else {
-            KOMARI_LOG_WARN("[Task] Failed to parse exec command (Task ID: %s)", msg->exec_task_id);
+        /* Mirror the Go reference (server/task.go): remote commands run under
+         * "sh -s" with the command text on stdin, so panels can send full
+         * shell syntax (pipes, redirects, globs). The same disable_web_ssh
+         * switch that gates the terminal also gates RCE, matching the Go
+         * behavior where disabled remote control answers with a synthetic
+         * "Remote control is disabled." result (exit code -1). */
+        if (g_config.disable_web_ssh) {
+            KOMARI_LOG_INFO("[Task] Remote control is disabled, rejecting exec (Task ID: %s)",
+                            msg->exec_task_id);
             report_upload_task_result(&g_config, msg->exec_task_id,
-                                      "exec: failed to parse command", 127,
+                                      "Remote control is disabled.", -1,
+                                      utils_get_current_timestamp());
+            return;
+        }
+
+        if (msg->exec_command[0] == '\0') {
+            KOMARI_LOG_WARN("[Task] No command provided (Task ID: %s)", msg->exec_task_id);
+            report_upload_task_result(&g_config, msg->exec_task_id,
+                                      "No command provided", 0,
+                                      utils_get_current_timestamp());
+            return;
+        }
+
+        /* Pre-execution guard on the raw command text: reject references to
+         * sensitive virtual filesystems and path traversal to shrink the
+         * attack surface (kept from the previous C-only hardening). */
+        if (strncmp(msg->exec_command, "/proc/", 6) == 0 ||
+            strncmp(msg->exec_command, "/sys/", 5) == 0 ||
+            strstr(msg->exec_command, "..") != NULL) {
+            KOMARI_LOG_WARN("[Task] Rejected exec touching restricted path (Task ID: %s)",
+                            msg->exec_task_id);
+            report_upload_task_result(&g_config, msg->exec_task_id,
+                                      "exec: command path rejected", 126,
+                                      utils_get_current_timestamp());
+            return;
+        }
+
+        char *argv[] = {"sh", "-s", NULL};
+        /* Log only at DEBUG level to avoid leaking sensitive command text
+         * into syslog. */
+        KOMARI_LOG_DEBUG("[Task] Executing via sh -s (Task ID: %s)", msg->exec_task_id);
+        if (utils_exec_command_argv_stdin(argv, msg->exec_command,
+                                          strlen(msg->exec_command),
+                                          output, sizeof(output), &exit_code) == 0) {
+            report_upload_task_result(&g_config, msg->exec_task_id, output, exit_code,
+                                       utils_get_current_timestamp());
+        } else {
+            /* fork()/pipe() failure inside the exec helper: report a
+             * synthetic failure result (exit code 127) so the panel's
+             * task does not hang. */
+            KOMARI_LOG_ERROR("[Task] Failed to execute command (Task ID: %s)",
+                             msg->exec_task_id);
+            report_upload_task_result(&g_config, msg->exec_task_id,
+                                      "exec: failed to execute command", 127,
                                       utils_get_current_timestamp());
         }
     } else if (strcmp(msg->message, "ping") == 0 || msg->ping_type[0] != '\0') {
@@ -749,14 +695,6 @@ static void *report_thread(void *arg) {
             while (retries < g_config.max_retries && g_running) {
                 if (ws_client_connect(g_ws_client) == 0) {
                     KOMARI_LOG_INFO("[WebSocket] Connected successfully");
-
-                    /* Send basic info right after the handshake so the server
-                     * has an up-to-date inventory before the first timed
-                     * upload. */
-                    int len = report_generate_basic_info_v2(&g_config, report_buf, sizeof(report_buf));
-                    if (len > 0) {
-                        ws_client_send_text(g_ws_client, report_buf, len);
-                    }
                     break;
                 }
 
@@ -838,12 +776,14 @@ static void *report_thread(void *arg) {
 
         time_t now = time(NULL);
         if (now - last_basic_info >= g_config.info_report_interval * 60) {
-            len = report_generate_basic_info_v2(&g_config, report_buf, sizeof(report_buf));
-
-            is_connected = ws_client_is_connected(g_ws_client);
-
-            if (len > 0 && is_connected) {
-                ws_client_send_text(g_ws_client, report_buf, len);
+            /* Basic info goes out via HTTP POST to the v2 RPC endpoint,
+             * mirroring the Go reference (server/basicInfo.go). It does not
+             * depend on the WebSocket being connected. */
+            int bi_len = report_generate_basic_info_v2(&g_config, report_buf,
+                                                       sizeof(report_buf));
+            if (bi_len > 0 &&
+                report_upload_basic_info(&g_config, report_buf, (size_t)bi_len) != 0) {
+                KOMARI_LOG_WARN("[Report] Basic info upload failed; will retry next cycle");
             }
             last_basic_info = now;
         }
@@ -1177,6 +1117,20 @@ int main(int argc, char *argv[]) {
             KOMARI_LOG_INFO("[Update] Background update checker started");
         } else {
             KOMARI_LOG_WARN("[Update] Failed to start update checker thread");
+        }
+    }
+
+    /* Upload basic info once synchronously before entering the WS loop,
+     * mirroring the Go reference (cmd/root.go: UpdateBasicInfo() followed by
+     * EstablishWebSocketConnection). The report thread keeps the periodic
+     * upload on the info_report_interval ticker. */
+    {
+        char bi_buf[4096];
+        int bi_len = report_generate_basic_info_v2(&g_config, bi_buf, sizeof(bi_buf));
+        if (bi_len > 0 &&
+            report_upload_basic_info(&g_config, bi_buf, (size_t)bi_len) != 0) {
+            KOMARI_LOG_WARN("[Report] Initial basic info upload failed; "
+                            "will retry on the report cycle");
         }
     }
 

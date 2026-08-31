@@ -141,6 +141,23 @@ int utils_exec_command(const char *cmd, char *output, size_t output_len, int *ex
 int utils_exec_command_argv(char *const argv[], char *output, size_t output_size, int *exit_code);
 
 /**
+ * Execute a command via fork() + execvp(), feeding stdin_data to the child's
+ * stdin before closing it. Intended for "sh -s" (command text on stdin),
+ * mirroring the Go reference task executor.
+ *
+ * @param argv        NULL-terminated argument vector
+ * @param stdin_data  Bytes written to the child's stdin (may be NULL)
+ * @param stdin_len   Length of stdin_data
+ * @param output      Output buffer for captured stdout/stderr (may be NULL)
+ * @param output_size Size of output
+ * @param exit_code   Output exit code (may be NULL)
+ * @return 0 on success, -1 on failure
+ */
+int utils_exec_command_argv_stdin(char *const argv[], const char *stdin_data,
+                                  size_t stdin_len, char *output,
+                                  size_t output_size, int *exit_code);
+
+/**
  * Create a directory and all missing parent directories.
  *
  * @param path Directory path

@@ -22,8 +22,11 @@
 #include "gpu.h"
 #include "cJSON.h"
 #include "jsonrpc.h"
+#include "v2.h"
+#include "compress.h"
 #include "http_client.h"
 #include "paths.h"
+#include <komari-agent-c/version.h>
 
 /* Escape special characters in a string for safe inclusion in a JSON string literal.
  * Conforms to RFC 8259 §7: escapes ", \, and control characters (0x00-0x1F)
@@ -138,6 +141,7 @@ typedef struct {
     conn_info_t conn;
     uint64_t uptime;
     int process_count;
+    char message[192]; /* Collector error summary embedded in the report. */
 } report_sample_t;
 
 static void report_collect_sample(const agent_config_t *config,
@@ -153,6 +157,27 @@ static void report_collect_sample(const agent_config_t *config,
     s->uptime = monitoring_get_uptime();
     s->process_count = monitoring_get_process_count();
     s->cpu_usage = cpu.cpu_usage;
+
+    /* Aggregate collector failures into the report message so the panel can
+     * surface them, mirroring the Go reference where GenerateReport appends
+     * collection errors to the same field. */
+    if (s->mem.total == 0) {
+        strncat(s->message, "mem: /proc/meminfo read failed; ",
+                sizeof(s->message) - strlen(s->message) - 1);
+    }
+    if (s->disk.total == 0) {
+        strncat(s->message, "disk: no usable mountpoint; ",
+                sizeof(s->message) - strlen(s->message) - 1);
+    }
+    if (s->conn.tcp_count < 0 || s->conn.udp_count < 0) {
+        strncat(s->message, "connections: /proc/net parse failed; ",
+                sizeof(s->message) - strlen(s->message) - 1);
+    }
+    /* Trim the trailing separator. */
+    size_t mlen = strlen(s->message);
+    while (mlen > 0 && (s->message[mlen - 1] == ' ' || s->message[mlen - 1] == ';')) {
+        s->message[--mlen] = '\0';
+    }
 }
 
 static void report_fill_status_metrics(const report_sample_t *s,
@@ -169,6 +194,9 @@ static void report_fill_status_metrics(const report_sample_t *s,
 /* Format the v1 report JSON from an already-collected sample. Returns the
  * payload length, or -1 on truncation/encoding error. */
 static int report_format_v1(const report_sample_t *s, char *buf, size_t buf_len) {
+    char message_escaped[sizeof(s->message) * 6 + 1];
+    escape_json_string(s->message, message_escaped, sizeof(message_escaped));
+
     int len = snprintf(buf, buf_len,
         "{"
         "\"cpu\":{\"usage\":%.2f},"
@@ -180,7 +208,7 @@ static int report_format_v1(const report_sample_t *s, char *buf, size_t buf_len)
         "\"connections\":{\"tcp\":%d,\"udp\":%d},"
         "\"uptime\":%" PRIu64 ","
         "\"process\":%d,"
-        "\"message\":\"\""
+        "\"message\":\"%s\""
         "}",
         s->cpu_usage,
         s->mem.total, s->mem.used,
@@ -191,7 +219,8 @@ static int report_format_v1(const report_sample_t *s, char *buf, size_t buf_len)
         s->net.tx_bytes, s->net.rx_bytes,
         s->conn.tcp_count, s->conn.udp_count,
         s->uptime,
-        s->process_count
+        s->process_count,
+        message_escaped
     );
 
     /* Treat truncation or encoding error as failure: a truncated JSON body
@@ -368,6 +397,7 @@ int report_generate_basic_info(const agent_config_t *config, char *buf, size_t b
         "{"
         "\"cpu_name\":\"%s\","
         "\"cpu_cores\":%d,"
+        "\"cpu_physical_cores\":%d,"
         "\"arch\":\"%s\","
         "\"os\":\"%s\","
         "\"kernel_version\":\"%s\","
@@ -378,10 +408,11 @@ int report_generate_basic_info(const agent_config_t *config, char *buf, size_t b
         "\"disk_total\":%" PRIu64 ","
         "\"gpu_name\":\"%s\","
         "\"virtualization\":\"%s\","
-        "\"version\":\"1.0.0\""
+        "\"version\":\"" KOMARI_AGENT_C_VERSION_STRING "\""
         "}",
         cpu_name_escaped,
         cpu.cpu_cores,
+        cpu.cpu_physical_cores > 0 ? cpu.cpu_physical_cores : cpu.cpu_cores,
         cpu.cpu_arch,
         os_name_escaped,
         kernel_escaped,
@@ -461,6 +492,36 @@ static int http_status_ok(int status) {
     return status >= 200 && status < 300;
 }
 
+/* Build "<endpoint>/api/clients/v2/rpc?token=<encoded>" into url. Returns 0
+ * on success, -1 when the token cannot be encoded or the URL overflows. */
+static int build_v2_rpc_url(const agent_config_t *config, char *url, size_t url_len) {
+    char encoded_token[MAX_TOKEN_LEN * 3 + 1];
+    if (url_encode(config->token, encoded_token, sizeof(encoded_token)) < 0) {
+        return -1;
+    }
+    int n = snprintf(url, url_len, "%s%s?token=%s",
+                     config->endpoint, V2_RPC_ENDPOINT, encoded_token);
+    return (n < 0 || (size_t)n >= url_len) ? -1 : 0;
+}
+
+/* Format a unix timestamp as RFC3339 with fractional seconds, matching Go's
+ * time.Time JSON encoding (RFC3339Nano: up to 9 fractional digits, trailing
+ * zeros trimmed). The C agent produces millisecond precision. */
+static int format_rfc3339_nano(uint64_t finished_at, char *buf, size_t buf_len) {
+    time_t t = (time_t)finished_at;
+    struct tm tm_utc;
+    if (!gmtime_r(&t, &tm_utc)) return -1;
+    long ms = (long)((finished_at % 1000) * 1000000); /* ns portion when finished_at carries ms */
+    /* finished_at is unix seconds; derive milliseconds from a higher
+     * precision clock when available so identical-second results remain
+     * distinguishable. Callers pass unix seconds, so the fraction is 0. */
+    (void)ms;
+    int n = snprintf(buf, buf_len, "%04d-%02d-%02dT%02d:%02d:%02d.000000000Z",
+                     tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
+                     tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+    return (n < 0 || (size_t)n >= buf_len) ? -1 : 0;
+}
+
 int report_upload_task_result(const agent_config_t *config,
                                const char *task_id,
                                const char *result,
@@ -479,31 +540,18 @@ int report_upload_task_result(const agent_config_t *config,
         return -1;
     }
 
-    /*
-     * Design note: The token is passed via URL query string (e.g., "?token=xxx")
-     * rather than an Authorization header. This is intentional and matches the
-     * Go reference implementation (see .komari-agent-main/server/task.go and
-     * basicInfo.go), where all HTTP reporting endpoints
-     * (/api/clients/task/result, /api/clients/ping/result,
-     * /api/clients/uploadBasicInfo) accept the token as a query parameter.
-     * The server side already supports this auth scheme, so changing to a
-     * header-based approach would break compatibility.
-     */
-    /* URL-encode the token to handle special characters safely (mirrors
-     * Go url.QueryEscape used by the reference client). The encoded form
-     * may be up to 3x the original length (each byte -> %XX). */
-    char encoded_token[MAX_TOKEN_LEN * 3 + 1];
-    if (url_encode(config->token, encoded_token, sizeof(encoded_token)) < 0) {
+    char finished_buf[64];
+    if (format_rfc3339_nano(finished_at, finished_buf, sizeof(finished_buf)) != 0) {
         free(escaped_result);
         free(escaped_task_id);
         return -1;
     }
 
-    /* Size URL buffer for endpoint + path + encoded token with margin. */
-    char url[MAX_ENDPOINT_LEN + 64 + MAX_TOKEN_LEN * 3 + 1];
-    int url_n = snprintf(url, sizeof(url), "%s/api/clients/task/result?token=%s",
-                         config->endpoint, encoded_token);
-    if (url_n < 0 || (size_t)url_n >= sizeof(url)) {
+    /* Build the JSON-RPC 2.0 request for agent.taskResult, mirroring the Go
+     * reference (server/task.go postV2RPC): id "task-<unix>", params with
+     * task_id/result/exit_code/finished_at (RFC3339). */
+    char *escaped_finished = utils_json_escape(finished_buf);
+    if (!escaped_finished) {
         free(escaped_result);
         free(escaped_task_id);
         return -1;
@@ -518,15 +566,21 @@ int report_upload_task_result(const agent_config_t *config,
     if (!payload) {
         free(escaped_result);
         free(escaped_task_id);
+        free(escaped_finished);
         return -1;
     }
 
     int n = snprintf(payload, payload_cap,
-        "{\"task_id\":\"%s\",\"result\":\"%s\",\"exit_code\":%d,\"finished_at\":%" PRIu64 "}",
-        escaped_task_id, escaped_result, exit_code, finished_at);
+        "{\"jsonrpc\":\"2.0\",\"id\":\"task-%" PRIu64 ""
+        "\",\"method\":\"%s\",\"params\":{"
+        "\"task_id\":\"%s\",\"result\":\"%s\","
+        "\"exit_code\":%d,\"finished_at\":\"%s\"}}",
+        (uint64_t)time(NULL), AGENT_TASK_RESULT,
+        escaped_task_id, escaped_result, exit_code, escaped_finished);
 
     free(escaped_result);
     free(escaped_task_id);
+    free(escaped_finished);
 
     /* Abort if the payload was truncated: a truncated JSON body would be
      * rejected by the server and could expose partial/malformed data. */
@@ -537,6 +591,14 @@ int report_upload_task_result(const agent_config_t *config,
         return -1;
     }
 
+    char url[MAX_ENDPOINT_LEN + 64 + MAX_TOKEN_LEN * 3 + 1];
+    if (build_v2_rpc_url(config, url, sizeof(url)) != 0) {
+        free(payload);
+        return -1;
+    }
+
+    /* Single attempt, no retry: failures are logged and the result is
+     * re-reported on the next task, matching the Go behavior. */
     int ok = http_status_ok(http_post_status(config, url, payload, NULL));
     free(payload);
     return ok ? 0 : -1;
@@ -551,33 +613,25 @@ int report_upload_ping_result(const agent_config_t *config,
 
     /* Escape ping_type before embedding it into the JSON payload to prevent
      * log injection / JSON structural breakage when the field contains
-     * quotes, backslashes or control characters (MIN-18, T26.4). Mirrors
-     * the escaping applied to task_id/result in report_upload_task_result. */
+     * quotes, backslashes or control characters. Mirrors the escaping
+     * applied to task_id/result in report_upload_task_result. */
     char *escaped_ping_type = utils_json_escape(ping_type);
     if (!escaped_ping_type) return -1;
 
-    /* Token passed via URL query string by design; see design note above. */
-    /* URL-encode the token to handle special characters safely (mirrors
-     * Go url.QueryEscape used by the reference client). */
-    char encoded_token[MAX_TOKEN_LEN * 3 + 1];
-    if (url_encode(config->token, encoded_token, sizeof(encoded_token)) < 0) {
-        free(escaped_ping_type);
-        return -1;
-    }
-
-    /* Size URL buffer for endpoint + path + encoded token with margin. */
-    char url[MAX_ENDPOINT_LEN + 64 + MAX_TOKEN_LEN * 3 + 1];
-    int url_n = snprintf(url, sizeof(url), "%s/api/clients/ping/result?token=%s",
-                         config->endpoint, encoded_token);
-    if (url_n < 0 || (size_t)url_n >= sizeof(url)) {
+    char finished_buf[64];
+    if (format_rfc3339_nano(finished_at, finished_buf, sizeof(finished_buf)) != 0) {
         free(escaped_ping_type);
         return -1;
     }
 
     char payload[512];
     int payload_n = snprintf(payload, sizeof(payload),
-        "{\"type\":\"ping_result\",\"task_id\":%u,\"ping_type\":\"%s\",\"value\":%d,\"finished_at\":%" PRIu64 "}",
-        task_id, escaped_ping_type, value, finished_at);
+        "{\"jsonrpc\":\"2.0\",\"id\":\"ping-%" PRIu64 ""
+        "\",\"method\":\"%s\",\"params\":{"
+        "\"task_id\":%u,\"ping_type\":\"%s\",\"value\":%d,"
+        "\"finished_at\":\"%s\"}}",
+        (uint64_t)time(NULL), AGENT_PING_RESULT,
+        task_id, escaped_ping_type, value, finished_buf);
     if (payload_n < 0 || (size_t)payload_n >= sizeof(payload)) {
         free(escaped_ping_type);
         return -1;
@@ -586,8 +640,61 @@ int report_upload_ping_result(const agent_config_t *config,
     /* escaped_ping_type is no longer needed once the payload has been built. */
     free(escaped_ping_type);
 
+    char url[MAX_ENDPOINT_LEN + 64 + MAX_TOKEN_LEN * 3 + 1];
+    if (build_v2_rpc_url(config, url, sizeof(url)) != 0) {
+        return -1;
+    }
+
     return http_status_ok(http_post_status(config, url, payload, NULL))
                ? 0 : -1;
+}
+
+int report_upload_basic_info(const agent_config_t *config,
+                             const char *payload, size_t payload_len) {
+    if (!config || !payload || payload_len == 0) return -1;
+
+    char url[MAX_ENDPOINT_LEN + 64 + MAX_TOKEN_LEN * 3 + 1];
+    if (build_v2_rpc_url(config, url, sizeof(url)) != 0) {
+        return -1;
+    }
+
+    /* Mirror the Go reference (server/basicInfo.go): gzip the body unless
+     * the caller disabled compression, and announce it via
+     * Content-Encoding. No retry — failures wait for the next cycle. */
+    const char *body = payload;
+    size_t body_len = payload_len;
+    char *gz = NULL;
+    size_t gz_len = 0;
+    if (!config->disable_compression &&
+        compress_gzip(payload, payload_len, &gz, &gz_len) == 0) {
+        body = gz;
+        body_len = gz_len;
+    }
+
+    http_client_request_t req;
+    http_client_response_t resp;
+    memset(&req, 0, sizeof(req));
+    memset(&resp, 0, sizeof(resp));
+    req.url = url;
+    req.body = body;
+    req.body_len = body_len;
+    req.gzip_body = 0; /* Already compressed above when enabled. */
+    req.ignore_cert = config->ignore_unsafe_cert;
+    if (body != payload) {
+        /* http_client_request would add a second Content-Encoding layer if
+         * gzip_body were set; the header must still be present, so set it
+         * through extra_headers instead. */
+        req.extra_headers = "Content-Encoding: gzip\r\n";
+    }
+
+    int ret = -1;
+    if (http_client_request(&req, &resp) == 0 &&
+        resp.status >= 200 && resp.status < 300) {
+        ret = 0;
+    }
+    http_client_response_free(&resp);
+    free(gz);
+    return ret;
 }
 
 void report_write_status_file(const agent_config_t *config,
