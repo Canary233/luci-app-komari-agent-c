@@ -45,6 +45,12 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU")
 elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
     set(KOMARI_COMPILER_CLANG ON)
 elseif(CMAKE_C_COMPILER_ID MATCHES "AppleClang")
+    # AppleClang only ever reaches here on a macOS host, which is limited to
+    # configure/syntax checks (see the KOMARI_TARGET_MACOS guard below). It
+    # joins KOMARI_COMPILER_GCC_LIKE so the warning-flag block in
+    # CompilerFlags.cmake applies during those checks; when adding new flags
+    # there, verify AppleClang accepts them too. Hardening/PIE flags are
+    # gated on KOMARI_TARGET_LINUX/OR_OPENWRT and never reach this compiler.
     set(KOMARI_COMPILER_APPLECLANG ON)
 endif()
 

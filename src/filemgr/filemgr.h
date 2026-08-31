@@ -20,6 +20,7 @@
 
 #include "cJSON.h"
 #include "config.h"
+#include "common.h"
 
 /* Concurrent file-operation cap (Go maxFileStreamOperations). */
 #define FILEMGR_MAX_CONCURRENT 8
