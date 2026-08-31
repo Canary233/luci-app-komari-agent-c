@@ -35,6 +35,9 @@
 #include "cJSON.h"
 #include "autodiscovery.h"
 #include "update.h"
+#include "jsonrpc.h"
+#include "fallback.h"
+#include "v2.h"
 
 #define DEFAULT_INTERVAL 1.0
 
@@ -663,6 +666,209 @@ static void handle_ws_message(ws_client_t *client, const ws_message_t *msg) {
     }
 }
 
+/* ====== POST fallback (agent.pull) ====== */
+
+/* Dispatch a v2 event pulled from the fallback channel. Mirrors the
+ * method-to-ws_message_t mapping used by ws_handle_v2_event so the same
+ * handler (handle_ws_message) executes exec/ping/terminal identically on
+ * both channels.
+ *
+ * @param event_id Numeric event ID for ACK accumulation (0 = no ACK)
+ * @param method   JSON-RPC method name
+ * @param params   Event params object (may be NULL)
+ * @return 1 when the event was handled (or recognized as a no-op), 0 when
+ *         the method is unknown (not ACKed, like the Go reference). */
+static int fallback_dispatch_event(const char *event_id, const char *method,
+                                   const cJSON *params) {
+    ws_message_t msg = {0};
+
+    if (strcmp(method, AGENT_EXEC) == 0) {
+        strncpy(msg.message, "exec", sizeof(msg.message) - 1);
+        cJSON *item = params ? cJSON_GetObjectItem(params, "task_id") : NULL;
+        if (item && cJSON_IsString(item) && item->valuestring) {
+            strncpy(msg.exec_task_id, item->valuestring, sizeof(msg.exec_task_id) - 1);
+        }
+        item = params ? cJSON_GetObjectItem(params, "command") : NULL;
+        if (item && cJSON_IsString(item) && item->valuestring) {
+            strncpy(msg.exec_command, item->valuestring, sizeof(msg.exec_command) - 1);
+        }
+        handle_ws_message(NULL, &msg);
+        return 1;
+    }
+    if (strcmp(method, AGENT_PING) == 0) {
+        strncpy(msg.message, "ping", sizeof(msg.message) - 1);
+        cJSON *item = params ? cJSON_GetObjectItem(params, "ping_task_id") : NULL;
+        if (item && cJSON_IsNumber(item)) {
+            msg.ping_task_id = (uint32_t)item->valuedouble;
+        }
+        item = params ? cJSON_GetObjectItem(params, "ping_type") : NULL;
+        if (item && cJSON_IsString(item) && item->valuestring) {
+            strncpy(msg.ping_type, item->valuestring, sizeof(msg.ping_type) - 1);
+        }
+        item = params ? cJSON_GetObjectItem(params, "ping_target") : NULL;
+        if (item && cJSON_IsString(item) && item->valuestring) {
+            strncpy(msg.ping_target, item->valuestring, sizeof(msg.ping_target) - 1);
+        }
+        if (contains_crlf(msg.ping_target)) {
+            KOMARI_LOG_WARN("[Fallback] Rejected ping_target containing CR/LF");
+        } else {
+            handle_ws_message(NULL, &msg);
+        }
+        return 1;
+    }
+    if (strcmp(method, AGENT_TERMINAL_REQUEST) == 0) {
+        cJSON *item = params ? cJSON_GetObjectItem(params, "request_id") : NULL;
+        if (item && cJSON_IsString(item) && item->valuestring) {
+            strncpy(msg.terminal_id, item->valuestring, sizeof(msg.terminal_id) - 1);
+        }
+        if (contains_crlf(msg.terminal_id)) {
+            KOMARI_LOG_WARN("[Fallback] Rejected terminal_id containing CR/LF");
+        } else {
+            handle_ws_message(NULL, &msg);
+        }
+        return 1;
+    }
+    if (strcmp(method, AGENT_MESSAGE) == 0 || strcmp(method, AGENT_EVENT) == 0) {
+        KOMARI_LOG_INFO("[Fallback] Received %s event", method);
+        return 1;
+    }
+    KOMARI_LOG_WARN("[Fallback] Unknown event method: %s", method);
+    return 0;
+}
+
+/* Extract fields of each event object {id, method, params} and dispatch it.
+ * Returns 1 when the event should be ACKed. */
+static int fallback_process_event(const cJSON *ev) {
+    if (!ev || !cJSON_IsObject(ev)) return 0;
+
+    cJSON *method = cJSON_GetObjectItem(ev, "method");
+    if (!method || !cJSON_IsString(method) || !method->valuestring) return 0;
+
+    cJSON *params = cJSON_GetObjectItem(ev, "params");
+    cJSON *id = cJSON_GetObjectItem(ev, "id");
+
+    /* Dedup by string ID via the shared v2 state so an event delivered both
+     * over WS and the fallback channel executes exactly once. */
+    char id_buf[32] = {0};
+    const char *id_str = NULL;
+    int ack_id = 0;
+    if (id && cJSON_IsString(id) && id->valuestring && id->valuestring[0]) {
+        id_str = id->valuestring;
+        char *endp = NULL;
+        long val = strtol(id->valuestring, &endp, 10);
+        if (endp != id->valuestring && val > 0) ack_id = (int)val;
+    } else if (id && cJSON_IsNumber(id)) {
+        long val = (long)id->valuedouble;
+        if (val > 0) {
+            ack_id = (int)val;
+            if (snprintf(id_buf, sizeof(id_buf), "%ld", val) > 0) id_str = id_buf;
+        }
+    }
+
+    if (id_str && v2_is_event_seen(ws_client_get_v2_state(g_ws_client), id_str)) {
+        return ack_id > 0; /* Already executed: ACK without re-running. */
+    }
+    if (id_str &&
+        v2_add_seen_event(ws_client_get_v2_state(g_ws_client), id_str) != 0) {
+        KOMARI_LOG_WARN("[Fallback] Failed to record seen event id: %s", id_str);
+    }
+
+    int handled = fallback_dispatch_event(id_str, method->valuestring, params);
+    return (handled && ack_id > 0) ? ack_id : (handled ? -1 : 0);
+}
+
+/* Process a response body's events; ACKs accumulate in the v2 state. */
+static void fallback_process_response_events(const cJSON *response) {
+    const cJSON *events = NULL;
+    if (fallback_extract_events(response, &events) <= 0) return;
+    const cJSON *ev;
+    cJSON_ArrayForEach(ev, events) {
+        fallback_process_event(ev);
+    }
+}
+
+/* POST fallback loop, entered when WS retries are exhausted. Runs until a
+ * WS reconnect succeeds or g_running clears, mirroring the Go reference
+ * (server/websocket.go runPostFallback): report ticker at interval seconds,
+ * pull loop polling without pause on success, reconnect attempt every
+ * reconnect_interval seconds. */
+static void run_post_fallback(void) {
+    KOMARI_LOG_WARN("[Fallback] Entering HTTP POST fallback mode");
+
+    time_t last_report = 0;
+
+    while (g_running) {
+        /* Reconnect attempt (bounded by reconnect_interval seconds of pull
+         * activity below). */
+        if (ws_client_connect(g_ws_client) == 0) {
+            KOMARI_LOG_INFO("[Fallback] WebSocket reconnected, leaving fallback mode");
+            return;
+        }
+
+        /* Pull loop: poll continuously for reconnect_interval seconds. */
+        time_t pull_deadline = time(NULL) + g_config.reconnect_interval;
+        while (g_running && time(NULL) < pull_deadline) {
+            int ack_buf[V2_ACK_IDS_MAX];
+            int ack_count = 0;
+            v2_snapshot_ack_ids(ws_client_get_v2_state(g_ws_client), ack_buf,
+                                (int)(sizeof(ack_buf) / sizeof(ack_buf[0])),
+                                &ack_count);
+
+            char *pull_req = NULL;
+            if (fallback_build_pull_request((long)time(NULL),
+                                            ack_count > 0 ? ack_buf : NULL,
+                                            ack_count, &pull_req) != 0) {
+                break;
+            }
+
+            cJSON *resp = NULL;
+            if (fallback_post_rpc(&g_config, pull_req, !g_config.disable_compression,
+                                  0, &resp) == 0) {
+                /* Success: clear the ACKs that were carried, then handle
+                 * any returned events (their ACKs accumulate for the next
+                 * request, mirroring the Go snapshot/clear order). */
+                v2_clear_acks(ws_client_get_v2_state(g_ws_client));
+                fallback_process_response_events(resp);
+            }
+            cJSON_Delete(resp);
+            free(pull_req);
+
+            /* Periodic report over POST while disconnected. */
+            time_t now = time(NULL);
+            if (now - last_report >= (time_t)g_config.interval) {
+                char report_buf[8192];
+                report_status_metrics_t metrics;
+                memset(&metrics, 0, sizeof(metrics));
+                int rlen = report_generate_v2_with_acks_ex(
+                    &g_config, &g_net_state, report_buf, sizeof(report_buf),
+                    NULL, 0, &metrics);
+                if (rlen > 0) {
+                    /* Wrap the report body into a request with ACKs. */
+                    /* report_generate_v2_with_acks_ex already emits the
+                     * request envelope including ack_event_ids; reuse it
+                     * directly as the POST body. */
+                    char *body = malloc((size_t)rlen + 1);
+                    if (body) {
+                        memcpy(body, report_buf, (size_t)rlen);
+                        body[rlen] = '\0';
+                        cJSON *report_resp = NULL;
+                        if (fallback_post_rpc(&g_config, body,
+                                              !g_config.disable_compression,
+                                              0, &report_resp) == 0) {
+                            v2_clear_acks(ws_client_get_v2_state(g_ws_client));
+                            fallback_process_response_events(report_resp);
+                            report_write_status_file(&g_config, &metrics, false);
+                        }
+                        cJSON_Delete(report_resp);
+                        free(body);
+                    }
+                }
+                last_report = now;
+            }
+        }
+    }
+}
+
 /**
  * Reporting thread: maintains the WebSocket connection and periodically
  * sends status reports and basic info to the panel.
@@ -711,11 +917,11 @@ static void *report_thread(void *arg) {
             }
 
             if (retries >= g_config.max_retries) {
-                KOMARI_LOG_ERROR("[WebSocket] Max retries reached, will retry again");
-                /* Continue the outer loop instead of exiting the report thread:
-                 * a transient outage longer than max_retries * reconnect_interval
-                 * must not permanently disable reporting. The next outer cycle
-                 * re-attempts the connection. */
+                /* WS retries exhausted: keep reporting and receiving events
+                 * over HTTP POST (agent.report / agent.pull) until the
+                 * connection recovers, mirroring the Go POST fallback. The
+                 * outer loop resumes WS attempts when the fallback exits. */
+                run_post_fallback();
                 continue;
             }
         }

@@ -122,6 +122,11 @@ komari_add_test(test_v2
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_v2.c"
 )
 
+# test_fallback — exercises protocol/fallback.c payload builders (POST fallback channel)
+komari_add_test(test_fallback
+    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_fallback.c"
+)
+
 # test_report — exercises report.c + monitoring + protocol (OpenSSL/Threads)
 komari_add_test(test_report
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_report.c"
