@@ -32,76 +32,95 @@ static int file_exists(const char *path) {
     return utils_file_exists(path);
 }
 
-/* Cached output of "systemd-detect-virt --vm" so the command is executed only
- * once instead of being re-run for every keyword probe. */
-static char g_virt_vm_output[256] = {0};
-static int g_virt_vm_cached = 0;
+/* Cached output of "systemd-detect-virt" so the command is executed only
+ * once. Mirrors the Go reference (virtualization.go): any non-empty output
+ * is reported verbatim as the virtualization string (kvm, lxc, docker,
+ * vmware, microsoft, xen, podman, ...). */
+static char g_virt_sd_output[256] = {0};
+static int g_virt_sd_cached = 0;
 
-static const char *virt_vm_output(void) {
-    if (!g_virt_vm_cached) {
+/* Returns 1 when systemd-detect-virt produced a non-empty result; the
+ * trimmed output is written into out. */
+static int virt_systemd_output(char *out, size_t out_len) {
+    if (!g_virt_sd_cached) {
         int exit_code = 0;
-        utils_exec_command("systemd-detect-virt --vm 2>/dev/null",
-                           g_virt_vm_output, sizeof(g_virt_vm_output), &exit_code);
-        g_virt_vm_cached = 1;
+        utils_exec_command("systemd-detect-virt 2>/dev/null",
+                           g_virt_sd_output, sizeof(g_virt_sd_output), &exit_code);
+        g_virt_sd_cached = 1;
     }
-    return g_virt_vm_output;
+    char *p = g_virt_sd_output;
+    while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+    if (*p == '\0') return 0;
+    snprintf(out, out_len, "%s", p);
+    /* Trim trailing whitespace. */
+    size_t len = strlen(out);
+    while (len > 0 && (out[len - 1] == '\n' || out[len - 1] == '\r' ||
+                       out[len - 1] == ' ' || out[len - 1] == '\t')) {
+        out[--len] = '\0';
+    }
+    return len > 0;
+}
+
+/* Mapping for systemd vendor strings that differ from the C constant set
+ * (mirrors the Go hypervisor vendor mapping where applicable). */
+static const char *virt_map_systemd_output(const char *raw) {
+    if (strcmp(raw, "microsoft") == 0) return VIRT_TYPE_HYPERV;
+    if (strcmp(raw, "oracle") == 0) return VIRT_TYPE_VIRTUALBOX;
+    return raw; /* kvm/qemu/vmware/xen/lxc/docker/podman/... pass through */
 }
 
 static const char *virt_detect_once(void) {
+    /* Container heuristics first (mirrors the Go detectContainer, keeping
+     * the C openvz probe as a superset). */
     if (file_exists(KOMARI_PATH_DOCKER_ENV)) {
         KOMARI_LOG_DEBUG("Virtualization detected: docker (/.dockerenv exists)");
         return VIRT_TYPE_DOCKER;
     }
 
     if (check_file_contains(KOMARI_PATH_PROC_SELF_CGROUP, "docker") ||
-        check_file_contains(KOMARI_PATH_PROC_SELF_CGROUP, "kubepods")) {
-        KOMARI_LOG_DEBUG("Virtualization detected: docker (/proc/1/cgroup)");
+        check_file_contains(KOMARI_PATH_PROC_SELF_CGROUP, "kubepods") ||
+        check_file_contains(KOMARI_PATH_PROC_SELF_CGROUP, "cri-containerd")) {
+        KOMARI_LOG_DEBUG("Virtualization detected: docker (cgroup)");
         return VIRT_TYPE_DOCKER;
+    }
+
+    if (check_file_contains(KOMARI_PATH_PROC_SELF_CGROUP, "libpod") ||
+        check_file_contains(KOMARI_PATH_PROC_SELF_CGROUP, "podman")) {
+        KOMARI_LOG_DEBUG("Virtualization detected: podman (cgroup)");
+        return "podman";
+    }
+
+    if (check_file_contains(KOMARI_PATH_PROC_SELF_CGROUP, "kubepods") ||
+        check_file_contains(KOMARI_PATH_PROC_SELF_CGROUP, "k8s")) {
+        KOMARI_LOG_DEBUG("Virtualization detected: kubernetes (cgroup)");
+        return "kubernetes";
     }
 
     if (file_exists(KOMARI_PATH_CONTAINER_ENV)) {
-        KOMARI_LOG_DEBUG("Virtualization detected: docker (/run/.containerenv)");
-        return VIRT_TYPE_DOCKER;
+        KOMARI_LOG_DEBUG("Virtualization detected: container (/run/.containerenv)");
+        return "container";
     }
 
-    if (check_file_contains(KOMARI_PATH_PROC_SELF_CGROUP, "lxc")) {
+    if (check_file_contains(KOMARI_PATH_PROC_SELF_CGROUP, "lxc") ||
+        file_exists("/dev/.lxc-boot-id")) {
         KOMARI_LOG_DEBUG("Virtualization detected: lxc");
         return VIRT_TYPE_LXC;
     }
 
     if (file_exists(KOMARI_PATH_PROC_VZ_VEINFO)) {
-        KOMARI_LOG_DEBUG("Virtualization detected: openvz");
+        KOMARI_LOG_DEBUG("Virtualization detected: openvz (C superset of the Go chain)");
         return VIRT_TYPE_OPENVZ;
     }
 
-    if (strstr(virt_vm_output(), "kvm") != NULL) {
-        KOMARI_LOG_DEBUG("Virtualization detected: kvm (systemd-detect-virt)");
-        return VIRT_TYPE_KVM;
-    }
-
-    if (strstr(virt_vm_output(), "qemu") != NULL) {
-        KOMARI_LOG_DEBUG("Virtualization detected: qemu (systemd-detect-virt)");
-        return VIRT_TYPE_QEMU;
-    }
-
-    if (strstr(virt_vm_output(), "vmware") != NULL) {
-        KOMARI_LOG_DEBUG("Virtualization detected: vmware (systemd-detect-virt)");
-        return VIRT_TYPE_VMWARE;
-    }
-
-    if (strstr(virt_vm_output(), "oracle") != NULL) {
-        KOMARI_LOG_DEBUG("Virtualization detected: virtualbox (systemd-detect-virt)");
-        return VIRT_TYPE_VIRTUALBOX;
-    }
-
-    if (strstr(virt_vm_output(), "microsoft") != NULL) {
-        KOMARI_LOG_DEBUG("Virtualization detected: hyperv (systemd-detect-virt)");
-        return VIRT_TYPE_HYPERV;
-    }
-
-    if (strstr(virt_vm_output(), "xen") != NULL) {
-        KOMARI_LOG_DEBUG("Virtualization detected: xen (systemd-detect-virt)");
-        return VIRT_TYPE_XEN;
+    /* systemd-detect-virt: report the raw output verbatim (trimmed), with
+     * a small mapping for vendor names that differ from the C constants. */
+    {
+        char raw[256];
+        if (virt_systemd_output(raw, sizeof(raw))) {
+            const char *mapped = virt_map_systemd_output(raw);
+            KOMARI_LOG_DEBUG("Virtualization detected via systemd-detect-virt: %s", mapped);
+            return mapped;
+        }
     }
 
     if (check_file_contains(KOMARI_PATH_PROC_CPUINFO, "QEMU") ||
@@ -122,6 +141,18 @@ static const char *virt_detect_once(void) {
         if (check_file_contains(KOMARI_PATH_SYS_DMI_PRODUCT_NAME, "KVM")) {
             KOMARI_LOG_DEBUG("Virtualization detected: kvm (DMI)");
             return VIRT_TYPE_KVM;
+        }
+        if (check_file_contains(KOMARI_PATH_SYS_DMI_PRODUCT_NAME, "Parallels")) {
+            KOMARI_LOG_DEBUG("Virtualization detected: parallels (DMI)");
+            return "parallels";
+        }
+        if (check_file_contains(KOMARI_PATH_SYS_DMI_PRODUCT_NAME, "bhyve")) {
+            KOMARI_LOG_DEBUG("Virtualization detected: bhyve (DMI)");
+            return "bhyve";
+        }
+        if (check_file_contains(KOMARI_PATH_SYS_DMI_PRODUCT_NAME, "acrn")) {
+            KOMARI_LOG_DEBUG("Virtualization detected: acrn (DMI)");
+            return "acrn";
         }
     }
 

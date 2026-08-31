@@ -37,6 +37,7 @@ typedef struct {
     double data_preserve_days;
     double detect_interval;
     double save_interval;
+    int month_rotate;           /* Traffic reset day (1..31, 0 = natural month disabled) */
     char save_path[256];
     bool running;
     pthread_t worker_thread;
@@ -50,6 +51,15 @@ typedef struct {
  * @return Pointer to new netstatic_t, NULL on failure
  */
 netstatic_t *netstatic_create(const char *save_path);
+
+/**
+ * Configure the monthly traffic reset day used by
+ * netstatic_get_monthly_traffic (mirrors the Go MonthRotate flag).
+ *
+ * @param ns          netstatic context
+ * @param month_rotate Reset day 1..31 (0 disables custom reset days)
+ */
+void netstatic_set_month_rotate(netstatic_t *ns, int month_rotate);
 
 /**
  * Destroy a netstatic context, stopping the worker and freeing resources.

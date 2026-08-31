@@ -34,6 +34,7 @@
 #include "version.h"
 #include "cJSON.h"
 #include "autodiscovery.h"
+#include "paths.h"
 #include "update.h"
 #include "jsonrpc.h"
 #include "fallback.h"
@@ -667,6 +668,40 @@ static void handle_ws_message(ws_client_t *client, const ws_message_t *msg) {
     }
 }
 
+/* ====== Monthly traffic hook (netstatic integration) ====== */
+
+/* Fill the monthly (tx, rx) totals across all filtered interfaces from the
+ * netstatic sampler, mirroring the Go net.go accumulation over
+ * GetTotalTrafficBetween(resetDay, now). */
+static int main_monthly_traffic(uint64_t *tx, uint64_t *rx) {
+    if (!g_netstatic) return -1;
+
+    uint64_t total_tx = 0, total_rx = 0;
+    char ifaces[64][32];
+    int n = monitoring_list_interfaces(ifaces, 64);
+    if (n <= 0) return -1;
+
+    for (int i = 0; i < n; i++) {
+        uint64_t if_tx = 0, if_rx = 0;
+        if (netstatic_get_monthly_traffic(g_netstatic, ifaces[i],
+                                          &if_tx, &if_rx) != 0) {
+            return -1;
+        }
+        if (if_tx > UINT64_MAX - total_tx) total_tx = UINT64_MAX;
+        else total_tx += if_tx;
+        if (if_rx > UINT64_MAX - total_rx) total_rx = UINT64_MAX;
+        else total_rx += if_rx;
+    }
+    *tx = total_tx;
+    *rx = total_rx;
+    return 0;
+}
+
+/* Strong definition overriding the weak default in report.c. */
+int report_monthly_traffic_hook(uint64_t *tx, uint64_t *rx) {
+    return main_monthly_traffic(tx, rx);
+}
+
 /* ====== POST fallback (agent.pull) ====== */
 
 /* Dispatch a v2 event pulled from the fallback channel. Mirrors the
@@ -1223,6 +1258,7 @@ int main(int argc, char *argv[]) {
      * take effect (they were previously loaded but never consumed). */
     monitoring_set_nic_filters(g_config.include_nics, g_config.exclude_nics);
     monitoring_set_mountpoint_filter(g_config.include_mountpoints);
+    monitoring_set_host_proc(g_config.host_proc);
 
     /* Ignore SIGPIPE to prevent process termination on broken pipe (mirrors Go runtime default).
      * Network write operations (send/SSL_write) will return EPIPE/EPIPE error instead. */
@@ -1307,8 +1343,17 @@ int main(int argc, char *argv[]) {
     ws_client_set_handler(g_ws_client, handle_ws_message);
     
     if (g_config.month_rotate > 0) {
-        g_netstatic = netstatic_create("/tmp/komari-netstatic.json");
+        g_netstatic = netstatic_create(KOMARI_PATH_NETSTATIC_FILE);
         if (g_netstatic) {
+            netstatic_set_month_rotate(g_netstatic, g_config.month_rotate);
+            /* Seed the sampler with the filtered interface set so the
+             * first run (no persisted history) actually collects data;
+             * mirrors the Go root.go SetNewConfig(Nics: InterfaceList()). */
+            char ifaces[64][32];
+            int n_ifaces = monitoring_list_interfaces(ifaces, 64);
+            for (int i = 0; i < n_ifaces; i++) {
+                netstatic_add_interface(g_netstatic, ifaces[i]);
+            }
             netstatic_start(g_netstatic);
         }
     }

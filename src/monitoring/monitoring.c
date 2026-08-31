@@ -20,6 +20,7 @@
 #include <sys/ioctl.h>
 #include <sys/utsname.h>
 #include <dirent.h>
+#include <fnmatch.h>
 #include <net/if.h>
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -71,10 +72,11 @@ static char g_exclude_nics[MAX_NICS_LEN] = "";
 static char g_include_mountpoints[MAX_MOUNTPOINTS_LEN] = "";
 
 /* Check whether `name` appears in a comma-separated list, ignoring
- * surrounding whitespace around entries. */
+ * surrounding whitespace around entries. Entries may contain shell-style
+ * wildcards (*, ?, [...]) resolved with fnmatch, mirroring the Go
+ * filepath.Match based filter (net.go shouldInclude). */
 static int name_in_list(const char *list, const char *name) {
     if (!list || !*list || !name || !*name) return 0;
-    size_t name_len = strlen(name);
     const char *p = list;
     while (*p) {
         while (*p == ' ' || *p == ',') p++;
@@ -82,11 +84,46 @@ static int name_in_list(const char *list, const char *name) {
         while (*p && *p != ',') p++;
         size_t len = (size_t)(p - start);
         while (len > 0 && start[len - 1] == ' ') len--;
-        if (len == name_len && strncmp(start, name, len) == 0) {
+        char pattern[128];
+        if (len >= sizeof(pattern)) len = sizeof(pattern) - 1;
+        memcpy(pattern, start, len);
+        pattern[len] = '\0';
+        if (fnmatch(pattern, name, 0) == 0) {
             return 1;
         }
     }
     return 0;
+}
+
+/* Virtual-interface prefix blacklist, mirroring the Go reference
+ * (net.go loopbackNames): br-, cni/docker/podman/flannel bridges, veth
+ * pairs, libvirt/KVM virbr, Proxmox vmbr, tap and firewall chaining
+ * interfaces. lo* matches via the "lo" prefix. */
+static const char *const NIC_EXCLUDE_PREFIXES[] = {
+    "br", "cni", "docker", "podman", "flannel", "lo",
+    "veth", "virbr", "vmbr", "tap", "fwbr", "fwpr",
+};
+#define NIC_EXCLUDE_PREFIXES_COUNT \
+    (int)(sizeof(NIC_EXCLUDE_PREFIXES) / sizeof(NIC_EXCLUDE_PREFIXES[0]))
+
+/* Decide whether a NIC participates in traffic statistics, applying the
+ * same precedence as the Go reference: blacklist first, then include
+ * (which wins over exclude), then exclude, then "include empty = all". */
+static int nic_should_include(const char *name) {
+    if (!name || !*name) return 0;
+    for (int i = 0; i < NIC_EXCLUDE_PREFIXES_COUNT; i++) {
+        size_t plen = strlen(NIC_EXCLUDE_PREFIXES[i]);
+        if (strncmp(name, NIC_EXCLUDE_PREFIXES[i], plen) == 0) {
+            return 0;
+        }
+    }
+    if (g_include_nics[0] != '\0') {
+        return name_in_list(g_include_nics, name);
+    }
+    if (g_exclude_nics[0] != '\0' && name_in_list(g_exclude_nics, name)) {
+        return 0;
+    }
+    return 1;
 }
 
 void monitoring_set_nic_filters(const char *include, const char *exclude) {
@@ -96,6 +133,48 @@ void monitoring_set_nic_filters(const char *include, const char *exclude) {
 
 void monitoring_set_mountpoint_filter(const char *include) {
     utils_set_string(g_include_mountpoints, sizeof(g_include_mountpoints), include);
+}
+
+/* Optional host /proc mountpoint (HOST_PROC). Empty by default. */
+static char g_host_proc[256] = "";
+
+void monitoring_set_host_proc(const char *path) {
+    utils_set_string(g_host_proc, sizeof(g_host_proc), path);
+}
+
+const char *monitoring_get_host_proc(void) {
+    return g_host_proc;
+}
+
+int monitoring_list_interfaces(char ifaces[][32], int max) {
+    if (!ifaces || max <= 0) return -1;
+
+    FILE *fp = fopen(KOMARI_PATH_PROC_NET_DEV, "r");
+    if (!fp) return -1;
+
+    char line[512];
+    int count = 0;
+
+    if (!fgets(line, sizeof(line), fp) || !fgets(line, sizeof(line), fp)) {
+        fclose(fp);
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), fp) && count < max) {
+        char iface[32];
+        uint64_t rx_bytes, tx_bytes;
+        if (sscanf(line, "%31[^:]: %" SCNu64 " %" SCNu64,
+                   iface, &rx_bytes, &tx_bytes) >= 1) {
+            char *p = iface;
+            while (*p == ' ') p++;
+            if (!nic_should_include(p)) continue;
+            strncpy(ifaces[count], p, 31);
+            ifaces[count][31] = '\0';
+            count++;
+        }
+    }
+    fclose(fp);
+    return count;
 }
 
 void monitoring_net_speed_update(monitoring_net_state_t *state) {
@@ -290,7 +369,7 @@ int monitoring_get_mem_swap_info(bool memory_include_cache, mem_info_t *mem, mem
     char line[256];
     unsigned long mem_total = 0, mem_free = 0, mem_available = 0;
     unsigned long buffers = 0, cached = 0, shmem = 0, sreclaimable = 0;
-    unsigned long swap_total = 0, swap_free = 0;
+    unsigned long swap_total = 0, swap_free = 0, swap_cached = 0;
 
     while (fgets(line, sizeof(line), fp)) {
         unsigned long value;
@@ -315,6 +394,8 @@ int monitoring_get_mem_swap_info(bool memory_include_cache, mem_info_t *mem, mem
                 swap_total = value * 1024;
             } else if (strcmp(key, "SwapFree") == 0) {
                 swap_free = value * 1024;
+            } else if (strcmp(key, "SwapCached") == 0) {
+                swap_cached = value * 1024;
             }
         }
     }
@@ -328,18 +409,33 @@ int monitoring_get_mem_swap_info(bool memory_include_cache, mem_info_t *mem, mem
         mem->cached = cached + sreclaimable;
 
         if (memory_include_cache) {
+            /* Go mem.go memory_include_cache mode: used = total - free,
+             * counting buff/cache as used. */
             mem->used = mem_total - mem_free;
-        } else if (mem_available > 0) {
-            mem->used = mem_total - mem_available;
         } else {
-            mem->used = mem_total - mem_free - buffers - cached;
+            /* Default mode mirrors the Go htop-like calculation
+             * (mem.go GetMemHtopLike): used = total - (free + cached +
+             * sreclaimable + buffers) + shmem, with an underflow guard that
+             * falls back to total - free. memory_report_raw_used selects
+             * the same formula on Linux (the Go flag only forces the htop
+             * path on non-Linux or when /proc is unreadable), so no extra
+             * branch is needed here. */
+            unsigned long used_diff = mem_free + cached + sreclaimable + buffers;
+            unsigned long used = (mem_total >= used_diff)
+                                     ? mem_total - used_diff
+                                     : mem_total - mem_free;
+            mem->used = used + shmem;
         }
     }
 
     if (swap) {
         swap->total = swap_total;
         swap->free = swap_free;
-        swap->used = swap_total - swap_free;
+        /* Go mem.go Swap(): used = total - free - SwapCached with an
+         * underflow guard falling back to total - free. */
+        unsigned long deductions = swap_free + swap_cached;
+        swap->used = (swap_total >= deductions) ? swap_total - deductions
+                                                : swap_total - swap_free;
     }
 
     return 0;
@@ -354,6 +450,115 @@ int monitoring_get_mem_info(bool memory_include_cache, mem_info_t *info) {
 
 int monitoring_get_swap_info(bool memory_include_cache, mem_info_t *info) {
     return monitoring_get_mem_swap_info(memory_include_cache, NULL, info);
+}
+
+/* Mount-point prefix blacklist, mirroring the Go reference
+ * (disk.go isPhysicalDisk). Compared case-insensitively; entries match
+ * exactly or as a directory prefix. */
+static const char *const MOUNTPOINT_EXCLUDE_PREFIXES[] = {
+    "/tmp", "/var/tmp", "/dev", "/run", "/var/lib/containers",
+    "/var/lib/docker", "/proc", "/sys", "/sys/fs/cgroup",
+    "/etc/resolv.conf", "/etc/hosts", "/etc/hostname", "/nix/store",
+};
+#define MOUNTPOINT_EXCLUDE_PREFIXES_COUNT \
+    (int)(sizeof(MOUNTPOINT_EXCLUDE_PREFIXES) / sizeof(MOUNTPOINT_EXCLUDE_PREFIXES[0]))
+
+/* Filesystem-type blacklist (disk.go). Compared case-insensitively, exact
+ * match or prefix. overlay is included in the Go blacklist; the OpenWrt
+ * root filesystem survives through the "/" always-include rule below. */
+static const char *const FSTYPE_EXCLUDE_PREFIXES[] = {
+    "tmpfs", "devtmpfs", "udev", "nfs", "cifs", "smb", "vboxsf", "9p",
+    "fuse", "overlay", "proc", "devpts", "sysfs", "cgroup", "mqueue",
+    "hugetlbfs", "debugfs", "binfmt_misc", "securityfs", "tracefs",
+    "pstore", "squashfs",
+};
+#define FSTYPE_EXCLUDE_PREFIXES_COUNT \
+    (int)(sizeof(FSTYPE_EXCLUDE_PREFIXES) / sizeof(FSTYPE_EXCLUDE_PREFIXES[0]))
+
+static int str_in_blacklist(const char *value, const char *const *list, int count) {
+    for (int i = 0; i < count; i++) {
+        size_t plen = strlen(list[i]);
+        if (strncasecmp(value, list[i], plen) == 0) {
+            /* Prefix lists contain both plain names ("/tmp") and directory
+             * names; require the value to match fully or continue with a
+             * path separator so "/temporary" does not hit "/tmp". */
+            if (value[plen] == '\0' || value[plen] == '/' ||
+                list[i][plen - 1] == '/') {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Check whether a mountpoint appears in the include filter list. Accepts
+ * ';'-separated lists (Go include_mountpoints format) and ','-separated
+ * lists (legacy C format); entries may carry wildcards via fnmatch. */
+static int mountpoint_in_filter(const char *mountpoint) {
+    const char *sep = strchr(g_include_mountpoints, ';');
+    const char *list = g_include_mountpoints;
+    char buf[MAX_MOUNTPOINTS_LEN];
+    (void)sep;
+    /* Normalize: treat both separators by scanning manually. */
+    const char *p = list;
+    while (*p) {
+        while (*p == ' ' || *p == ',' || *p == ';') p++;
+        const char *start = p;
+        while (*p && *p != ',' && *p != ';') p++;
+        size_t len = (size_t)(p - start);
+        while (len > 0 && start[len - 1] == ' ') len--;
+        if (len == 0) continue;
+        char pattern[256];
+        if (len >= sizeof(pattern)) len = sizeof(pattern) - 1;
+        memcpy(pattern, start, len);
+        pattern[len] = '\0';
+        if (fnmatch(pattern, mountpoint, 0) == 0 ||
+            strncmp(pattern, mountpoint, len) == 0) {
+            (void)buf;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Decide whether a /proc/mounts entry counts as a physical disk, mirroring
+ * the Go isPhysicalDisk rules. */
+static int is_physical_mount(const char *device, const char *mountpoint,
+                             const char *fstype, const char *opts) {
+    /* Rule 1: "/" is always included (keeps the OpenWrt overlay root). */
+    if (strcmp(mountpoint, "/") == 0) return 1;
+
+    /* Rule 2: mountpoint prefix blacklist. */
+    if (str_in_blacklist(mountpoint, MOUNTPOINT_EXCLUDE_PREFIXES,
+                         MOUNTPOINT_EXCLUDE_PREFIXES_COUNT)) {
+        return 0;
+    }
+
+    /* Rule 3: autofs without a /dev/ device is excluded. */
+    if (strcmp(fstype, "autofs") == 0 && strncmp(device, "/dev/", 5) != 0) {
+        return 0;
+    }
+
+    /* Rule 4: fuseblk (ntfs-3g) is always kept. */
+    if (strcmp(fstype, "fuseblk") == 0) return 1;
+
+    /* Rule 5: fstype blacklist. */
+    if (str_in_blacklist(fstype, FSTYPE_EXCLUDE_PREFIXES,
+                         FSTYPE_EXCLUDE_PREFIXES_COUNT)) {
+        return 0;
+    }
+
+    /* Rule 6: network mounts carry "remote"/"network" in opts (mainly
+     * Windows; cheap to honour on Linux). */
+    if (opts && (strcasestr(opts, "remote") != NULL ||
+                 strcasestr(opts, "network") != NULL)) {
+        return 0;
+    }
+
+    /* Rule 7: loop devices are excluded. */
+    if (strncmp(device, "/dev/loop", 9) == 0) return 0;
+
+    return 1;
 }
 
 int monitoring_get_disk_info(disk_info_t *info) {
@@ -371,67 +576,102 @@ int monitoring_get_disk_info(disk_info_t *info) {
 
     FILE *fp = fopen(KOMARI_PATH_PROC_MOUNTS, "r");
     if (!fp) return -1;
-    
+
+    /* When an explicit mountpoint filter is configured, only those
+     * mountpoints are measured (skipping physical-disk filtering and device
+     * dedup entirely), mirroring disk.go. The list accepts ';' (Go format)
+     * and ',' (legacy C format). */
+    int filter_mode = (g_include_mountpoints[0] != '\0');
+
+    /* Device dedup table: the same device mounted at multiple locations
+     * (bind mounts, quota remounts) must be counted once, keeping the entry
+     * with the larger total. ZFS devices are deduped by pool name (the part
+     * before the first '/'). Mirrors disk.go. */
+    enum { MAX_TRACKED = 256 };
+    struct {
+        char device[128];
+        uint64_t total;
+        uint64_t free;
+    } seen[MAX_TRACKED];
+    int seen_n = 0;
+
     char line[512];
-    char device[256], mountpoint[256], fstype[64];
-    
+    char device[256], mountpoint[256], fstype[64], opts[256];
+
     while (fgets(line, sizeof(line), fp)) {
-        if (sscanf(line, "%255s %255s %63s", device, mountpoint, fstype) == 3) {
-            if (strncmp(device, "/dev/", 5) != 0 &&
-                strncmp(device, "/dev/mapper/", 12) != 0 &&
-                strncmp(device, "ubi", 3) != 0 &&
-                strncmp(device, "jffs2", 5) != 0 &&
-                strncmp(device, "overlay", 7) != 0) {
-                continue;
-            }
-            
-            if (strcmp(fstype, "tmpfs") == 0 ||
-                strcmp(fstype, "devtmpfs") == 0 ||
-                strcmp(fstype, "debugfs") == 0 ||
-                strcmp(fstype, "tracefs") == 0 ||
-                strcmp(fstype, "securityfs") == 0 ||
-                strcmp(fstype, "pstore") == 0 ||
-                strcmp(fstype, "cgroup") == 0 ||
-                strcmp(fstype, "cgroup2") == 0) {
-                continue;
-            }
+        if (sscanf(line, "%255s %255s %63s %255s", device, mountpoint,
+                   fstype, opts) < 3) {
+            continue;
+        }
 
-            /* Apply the configured mount point include filter. */
-            if (g_include_mountpoints[0] != '\0' &&
-                !name_in_list(g_include_mountpoints, mountpoint)) {
-                continue;
-            }
-            
-            struct statvfs st;
-            if (statvfs(mountpoint, &st) == 0) {
-                /* Cast to uint64_t before multiplication to avoid 32-bit
-                   overflow on platforms where `unsigned long` is 32 bits,
-                   and defensively clamp on uint64_t overflow (MIN-27/28). */
-                uint64_t frsize = (uint64_t)st.f_frsize;
-                uint64_t blocks = (uint64_t)st.f_blocks;
-                uint64_t bfree  = (uint64_t)st.f_bfree;
+        /* Filter mode: measure only listed mountpoints. */
+        if (filter_mode) {
+            if (!mountpoint_in_filter(mountpoint)) continue;
+        } else if (!is_physical_mount(device, mountpoint, fstype, opts)) {
+            continue;
+        }
 
-                uint64_t total = (frsize != 0 && blocks > UINT64_MAX / frsize)
-                                 ? UINT64_MAX : blocks * frsize;
-                uint64_t free  = (frsize != 0 && bfree  > UINT64_MAX / frsize)
-                                 ? UINT64_MAX : bfree  * frsize;
+        struct statvfs st;
+        if (statvfs(mountpoint, &st) != 0) continue;
 
-                /* Clamp running totals to UINT64_MAX to prevent addition
-                   overflow when aggregating across multiple mounts. */
-                if (total > UINT64_MAX - info->total) {
-                    info->total = UINT64_MAX;
-                } else {
-                    info->total += total;
-                }
-                if (free > UINT64_MAX - info->free) {
-                    info->free = UINT64_MAX;
-                } else {
-                    info->free += free;
-                }
-            }
+        /* Cast to uint64_t before multiplication to avoid 32-bit overflow
+         * and clamp on uint64_t overflow (MIN-27/28). */
+        uint64_t frsize = (uint64_t)st.f_frsize;
+        uint64_t blocks = (uint64_t)st.f_blocks;
+        uint64_t bfree  = (uint64_t)st.f_bfree;
+
+        uint64_t total = (frsize != 0 && blocks > UINT64_MAX / frsize)
+                         ? UINT64_MAX : blocks * frsize;
+        uint64_t free_b = (frsize != 0 && bfree  > UINT64_MAX / frsize)
+                          ? UINT64_MAX : bfree  * frsize;
+
+        if (filter_mode) {
+            /* No dedup in filter mode, matching the Go behavior. */
+            if (total > UINT64_MAX - info->total) info->total = UINT64_MAX;
+            else info->total += total;
+            if (free_b > UINT64_MAX - info->free) info->free = UINT64_MAX;
+            else info->free += free_b;
+            continue;
+        }
+
+        /* Dedup key: ZFS pools dedupe by pool name, everything else by
+         * device path. */
+        char key[128];
+        if (strcmp(fstype, "zfs") == 0) {
+            const char *slash = strchr(device, '/');
+            size_t klen = slash ? (size_t)(slash - device) : strlen(device);
+            if (klen >= sizeof(key)) klen = sizeof(key) - 1;
+            memcpy(key, device, klen);
+            key[klen] = '\0';
+        } else {
+            snprintf(key, sizeof(key), "%s", device);
+        }
+
+        int idx = -1;
+        for (int i = 0; i < seen_n; i++) {
+            if (strcmp(seen[i].device, key) == 0) { idx = i; break; }
+        }
+        if (idx < 0 && seen_n < MAX_TRACKED) {
+            snprintf(seen[seen_n].device, sizeof(seen[seen_n].device), "%s", key);
+            seen[seen_n].total = total;
+            seen[seen_n].free = free_b;
+            seen_n++;
+        } else if (idx >= 0 && total > seen[idx].total) {
+            /* Same device mounted again: keep the larger total entry. */
+            seen[idx].total = total;
+            seen[idx].free = free_b;
         }
     }
     fclose(fp);
+
+    if (!filter_mode) {
+        for (int i = 0; i < seen_n; i++) {
+            if (seen[i].total > UINT64_MAX - info->total) info->total = UINT64_MAX;
+            else info->total += seen[i].total;
+            if (seen[i].free > UINT64_MAX - info->free) info->free = UINT64_MAX;
+            else info->free += seen[i].free;
+        }
+    }
 
     /* Guard against unsigned underflow: in abnormal filesystem states (e.g.
      * statvfs returning f_bfree > f_blocks, or aggregated mounts where free
@@ -482,11 +722,8 @@ int monitoring_get_net_info(monitoring_net_state_t *state, net_info_t *info) {
             char *p = iface;
             while (*p == ' ') p++;
 
-            if (strcmp(p, "lo") == 0) continue;
-
-            /* Apply the configured NIC include/exclude filters. */
-            if (g_include_nics[0] != '\0' && !name_in_list(g_include_nics, p)) continue;
-            if (g_exclude_nics[0] != '\0' && name_in_list(g_exclude_nics, p)) continue;
+            /* Blacklist + include/exclude filters (see nic_should_include). */
+            if (!nic_should_include(p)) continue;
 
             total_rx += rx_bytes;
             total_tx += tx_bytes;
@@ -614,30 +851,54 @@ int monitoring_get_system_info(system_info_t *info) {
     
     memset(info, 0, sizeof(system_info_t));
     
-    FILE *fp = fopen("/etc/openwrt_release", "r");
+    /* OS name resolution order, mirroring the Go reference os_linux.go:
+     * /etc/os-release PRETTY_NAME (generic Linux) first, then the OpenWrt
+     * specific /etc/openwrt_release, then a bare "OpenWrt" fallback. */
+    FILE *fp = fopen("/etc/os-release", "r");
     if (fp) {
         char line[256];
         while (fgets(line, sizeof(line), fp)) {
-            if (strncmp(line, "DISTRIB_DESCRIPTION", 19) == 0) {
-                char *eq = strchr(line, '=');
-                if (eq) {
-                    eq++;
-                    while (*eq == '\'' || *eq == '"') eq++;
-                    char *end = eq + strlen(eq) - 1;
-                    while (end > eq && (*end == '\'' || *end == '"' || *end == '\n')) {
-                        *end = '\0';
-                        end--;
-                    }
-                    strncpy(info->os_name, eq, sizeof(info->os_name) - 1);
-                    /* Explicit NUL termination in case source fills the buffer. */
-                    info->os_name[sizeof(info->os_name) - 1] = '\0';
+            if (strncmp(line, "PRETTY_NAME=", 12) == 0) {
+                char *eq = line + 12;
+                while (*eq == '\'' || *eq == '"') eq++;
+                char *end = eq + strlen(eq) - 1;
+                while (end > eq && (*end == '\'' || *end == '"' || *end == '\n')) {
+                    *end = '\0';
+                    end--;
                 }
+                strncpy(info->os_name, eq, sizeof(info->os_name) - 1);
+                info->os_name[sizeof(info->os_name) - 1] = '\0';
                 break;
             }
         }
         fclose(fp);
     }
-    
+
+    if (info->os_name[0] == '\0') {
+        fp = fopen("/etc/openwrt_release", "r");
+        if (fp) {
+            char line[256];
+            while (fgets(line, sizeof(line), fp)) {
+                if (strncmp(line, "DISTRIB_DESCRIPTION", 19) == 0) {
+                    char *eq = strchr(line, '=');
+                    if (eq) {
+                        eq++;
+                        while (*eq == '\'' || *eq == '"') eq++;
+                        char *end = eq + strlen(eq) - 1;
+                        while (end > eq && (*end == '\'' || *end == '"' || *end == '\n')) {
+                            *end = '\0';
+                            end--;
+                        }
+                        strncpy(info->os_name, eq, sizeof(info->os_name) - 1);
+                        info->os_name[sizeof(info->os_name) - 1] = '\0';
+                    }
+                    break;
+                }
+            }
+            fclose(fp);
+        }
+    }
+
     if (info->os_name[0] == '\0') {
         strcpy(info->os_name, "OpenWrt");
     }
@@ -675,8 +936,19 @@ int monitoring_get_process_count(void) {
         return g_process_count_cache;
     }
 
+    /* Container environments may expose the host's /proc at a different
+     * location (HOST_PROC env / host_proc config), mirroring the Go
+     * gopsutil HostProc override. */
+    const char *proc_root = KOMARI_PATH_PROC;
+    {
+        const char *host_proc = monitoring_get_host_proc();
+        if (host_proc && host_proc[0] != '\0') {
+            proc_root = host_proc;
+        }
+    }
+
     int count = 0;
-    DIR *dir = opendir(KOMARI_PATH_PROC);
+    DIR *dir = opendir(proc_root);
     if (!dir) return g_process_count_cache;  /* fall back to last known value */
 
     struct dirent *entry;

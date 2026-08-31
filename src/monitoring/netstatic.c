@@ -293,6 +293,11 @@ static void *netstatic_worker(void *arg) {
     return NULL;
 }
 
+void netstatic_set_month_rotate(netstatic_t *ns, int month_rotate) {
+    if (!ns) return;
+    ns->month_rotate = month_rotate;
+}
+
 netstatic_t *netstatic_create(const char *save_path) {
     netstatic_t *ns = calloc(1, sizeof(netstatic_t));
     if (!ns) return NULL;
@@ -300,6 +305,7 @@ netstatic_t *netstatic_create(const char *save_path) {
     ns->data_preserve_days = 31.0;
     ns->detect_interval = 2.0;
     ns->save_interval = 600.0;
+    ns->month_rotate = 0;
     ns->running = false;
     
     if (save_path) {
@@ -420,21 +426,11 @@ int netstatic_get_monthly_traffic(netstatic_t *ns, const char *iface,
     *tx = 0;
     *rx = 0;
     
-    time_t now = time(NULL);
-    struct tm tm_now;
-    localtime_r(&now, &tm_now);
-
-    /* Compute the [start, end) timestamp range of the current month once, so
-     * the per-sample loop below only compares timestamps instead of calling
-     * the non-reentrant localtime() for every sample (up to 200k of them).
-     * mktime normalizes tm_mon overflow into the next year. */
-    tm_now.tm_mday = 1;
-    tm_now.tm_hour = 0;
-    tm_now.tm_min = 0;
-    tm_now.tm_sec = 0;
-    time_t month_start = mktime(&tm_now);
-    tm_now.tm_mon += 1;
-    time_t month_end = mktime(&tm_now);
+    /* Window: [reset instant, now]. The reset instant derives from the
+     * configured month_rotate day (utils_get_last_reset_date), mirroring
+     * the Go net.go GetTotalTrafficBetween(GetLastResetDate(...), now). */
+    time_t month_end = time(NULL);
+    time_t month_start = utils_get_last_reset_date(ns->month_rotate, month_end);
 
     pthread_mutex_lock(&ns->mutex);
     

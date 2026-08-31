@@ -20,6 +20,7 @@
 #include "logger.h"
 #include "virtual.h"
 #include "gpu.h"
+#include "ip_detect.h"
 #include "cJSON.h"
 #include "jsonrpc.h"
 #include "v2.h"
@@ -142,7 +143,16 @@ typedef struct {
     uint64_t uptime;
     int process_count;
     char message[192]; /* Collector error summary embedded in the report. */
+    int monthly_from_netstatic; /* 1 when totalUp/totalDown came from netstatic */
 } report_sample_t;
+
+/* Hook installed by main.c when month_rotate is active; fills the monthly
+ * (tx, rx) totals. Returns 0 on success. Weak default returns -1 so builds
+ * without netstatic integration keep the counter-based behavior. */
+__attribute__((weak)) int report_monthly_traffic_hook(uint64_t *tx, uint64_t *rx) {
+    (void)tx; (void)rx;
+    return -1;
+}
 
 static void report_collect_sample(const agent_config_t *config,
                                   monitoring_net_state_t *net_state,
@@ -157,6 +167,22 @@ static void report_collect_sample(const agent_config_t *config,
     s->uptime = monitoring_get_uptime();
     s->process_count = monitoring_get_process_count();
     s->cpu_usage = cpu.cpu_usage;
+
+    /* MonthRotate active: totalUp/totalDown switch from raw /proc counters
+     * to the netstatic window totals (since the configured reset day),
+     * mirroring the Go net.go. Speeds stay counter-based either way. On
+     * failure fall back to the counters and record why in the message. */
+    if (config->month_rotate > 0) {
+        uint64_t m_tx = 0, m_rx = 0;
+        if (report_monthly_traffic_hook(&m_tx, &m_rx) == 0) {
+            s->net.tx_bytes = m_tx;
+            s->net.rx_bytes = m_rx;
+            s->monthly_from_netstatic = 1;
+        } else {
+            strncat(s->message, "netstatic: monthly traffic unavailable; ",
+                    sizeof(s->message) - strlen(s->message) - 1);
+        }
+    }
 
     /* Aggregate collector failures into the report message so the panel can
      * surface them, mirroring the Go reference where GenerateReport appends
@@ -363,7 +389,12 @@ int report_generate_basic_info(const agent_config_t *config, char *buf, size_t b
     monitoring_get_mem_swap_info(config->memory_include_cache, &mem, &swap);
     monitoring_get_disk_info(&disk);
     monitoring_get_system_info(&sys);
-    monitoring_get_ip_address(ipv4, sizeof(ipv4), ipv6, sizeof(ipv6));
+    /* Public IP detection chain: NIC (when get_ip_addr_from_nic) ->
+     * custom_ipv4/6 overrides -> external echo APIs, mirroring the Go
+     * reference monitoring.GetIPAddress. */
+    ip_detect_public(config->get_ip_addr_from_nic,
+                     config->custom_ipv4, config->custom_ipv6,
+                     ipv4, sizeof(ipv4), ipv6, sizeof(ipv6));
     
     char cpu_name_escaped[256];
     char os_name_escaped[256];

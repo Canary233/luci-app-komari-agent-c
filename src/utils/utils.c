@@ -383,6 +383,70 @@ uint64_t utils_get_current_timestamp(void) {
     return (uint64_t)time(NULL);
 }
 
+/* Compute the start (local midnight) of the most recent monthly reset for a
+ * configurable reset day, mirroring the Go reference utils.GetLastResetDate:
+ *
+ * - reset_day outside 1..31 falls back to "today" (no rotation).
+ * - Months without the requested day (e.g. Feb 31) roll forward: the reset
+ *   instant is the 1st of the following month, 00:00 local time.
+ * - When now is before this month's reset instant, the previous month's
+ *   reset instant is returned (with the same month-end roll-forward). */
+static time_t utils_month_reset_instant(int year, int month, int reset_day) {
+    /* month: 1..12. Build midnight of the reset day (or next month 1st). */
+    struct tm tm_val;
+    memset(&tm_val, 0, sizeof(tm_val));
+    tm_val.tm_year = year - 1900;
+    tm_val.tm_mon = month - 1;
+
+    /* Days in month: zero day-of-month of the next month. */
+    int next_month = month + 1, next_year = year;
+    if (next_month > 12) { next_month = 1; next_year++; }
+
+    struct tm probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.tm_year = year - 1900;
+    probe.tm_mon = month - 1;
+    probe.tm_mday = reset_day;
+    probe.tm_hour = 0; probe.tm_min = 0; probe.tm_sec = 0;
+    time_t instant = mktime(&probe);
+
+    struct tm check;
+    localtime_r(&instant, &check);
+    if (check.tm_mday != reset_day) {
+        /* Month-end roll-forward: use next month's 1st. */
+        memset(&probe, 0, sizeof(probe));
+        probe.tm_year = next_year - 1900;
+        probe.tm_mon = next_month - 1;
+        probe.tm_mday = 1;
+        probe.tm_hour = 0; probe.tm_min = 0; probe.tm_sec = 0;
+        instant = mktime(&probe);
+    }
+    return instant;
+}
+
+time_t utils_get_last_reset_date(int reset_day, time_t now) {
+    if (reset_day < 1 || reset_day > 31) {
+        /* No rotation: treat "now" as the epoch of the current window so
+         * the window contains only the present instant (zero traffic). */
+        return now;
+    }
+
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    int year = tm_now.tm_year + 1900;
+    int month = tm_now.tm_mon + 1;
+
+    time_t this_reset = utils_month_reset_instant(year, month, reset_day);
+    if (now >= this_reset) {
+        return this_reset;
+    }
+
+    /* Previous month (handles January -> December of the previous year). */
+    int prev_month = month - 1, prev_year = year;
+    if (prev_month < 1) { prev_month = 12; prev_year--; }
+    return utils_month_reset_instant(prev_year, prev_month, reset_day);
+}
+
 int utils_format_timestamp(uint64_t timestamp, char *buf, size_t buf_len) {
     if (!buf || buf_len == 0) return -1;
     

@@ -239,6 +239,29 @@ int monitoring_get_ip_address(char *ipv4, size_t ipv4_len,
 void monitoring_set_nic_filters(const char *include, const char *exclude);
 
 /**
+ * Set the host /proc mountpoint used for process counting (HOST_PROC,
+ * container environments). Pass "" to use the default /proc.
+ */
+void monitoring_set_host_proc(const char *path);
+
+/**
+ * Get the configured host /proc mountpoint ("" when unset).
+ */
+const char *monitoring_get_host_proc(void);
+
+/**
+ * List the network interfaces that pass the NIC filters, in the order they
+ * appear in /proc/net/dev. Used to seed the netstatic monthly-traffic
+ * sampler with the filtered interface set (mirrors the Go
+ * InterfaceList usage in cmd/root.go).
+ *
+ * @param ifaces Output array of interface-name buffers (each >= 32 bytes)
+ * @param max    Capacity of the ifaces array
+ * @return Number of interfaces written (>= 0), -1 on failure
+ */
+int monitoring_list_interfaces(char ifaces[][32], int max);
+
+/**
  * Configure the mount point include filter.
  *
  * Same dead-configuration fix as monitoring_set_nic_filters: include_

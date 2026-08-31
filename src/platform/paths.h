@@ -47,6 +47,11 @@
 #define KOMARI_PATH_CONTAINER_ENV    "/run/.containerenv"
 
 /* ---- LuCI status handoff (written by the agent, read by the controller) ---- */
+/* Monthly-traffic sampler persistence. Lives on /etc (writable jffs2 on
+ * OpenWrt) rather than /tmp so traffic history survives reboots; the Go
+ * reference uses ./net_static.json relative to the working directory. */
+#define KOMARI_PATH_NETSTATIC_FILE "/etc/komari-netstatic.json"
+
 #define KOMARI_PATH_STATUS_FILE    "/tmp/komari-agent-c-status.json"
 
 #endif /* KOMARI_AGENT_C_PLATFORM_PATHS_H */

@@ -101,6 +101,18 @@ int utils_str_ends_with(const char *str, const char *suffix);
 uint64_t utils_get_current_timestamp(void);
 
 /**
+ * Compute the start instant of the most recent monthly traffic window for a
+ * configurable reset day (1..31), mirroring the Go reference
+ * utils.GetLastResetDate. Days beyond the month end roll forward to the
+ * 1st of the following month; values outside 1..31 disable rotation.
+ *
+ * @param reset_day Day of month for the traffic reset (1..31)
+ * @param now       Reference time (unix seconds)
+ * @return Reset instant (unix seconds, local midnight)
+ */
+time_t utils_get_last_reset_date(int reset_day, time_t now);
+
+/**
  * Format a unix timestamp as an ISO 8601 string (YYYY-MM-DDTHH:MM:SS).
  *
  * @param timestamp Unix timestamp
