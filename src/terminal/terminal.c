@@ -316,6 +316,29 @@ void terminal_terminate(terminal_t *term) {
             term->pid = -1;  /* mark as reaped to prevent pid reuse issues */
 
             KOMARI_LOG_INFO("Sending SIGTERM to process group %d...", pgid);
+            /* Graceful close sequence mirroring the Go reference
+             * (terminal.go gracefulClose): Ctrl+C x3 (50 ms apart), EOT,
+             * then "exit\n", giving the shell a chance to shut down
+             * cleanly before signals are used. */
+            static const struct {
+                const char *data;
+                size_t len;
+                int delay_ms;
+            } close_seq[] = {
+                {"\x03", 1, 50},
+                {"\x03", 1, 50},
+                {"\x03", 1, 200},
+                {"\x04", 1, 100},
+                {"exit\n", 5, 100},
+            };
+            for (size_t i = 0; i < sizeof(close_seq) / sizeof(close_seq[0]); i++) {
+                if (write(term->master_fd, close_seq[i].data,
+                          close_seq[i].len) < 0) {
+                    /* PTY may already be gone; the signal path still runs. */
+                    break;
+                }
+                usleep((useconds_t)close_seq[i].delay_ms * 1000);
+            }
             kill(-pgid, SIGTERM);
 
             int retries = 50;

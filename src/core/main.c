@@ -140,6 +140,11 @@ typedef struct {
                                 * after pthread_join to know the session memory
                                 * is safe to free. */
     bool monitor_started;      /* True once monitor_thread is valid */
+    bool detached;             /* True while the WS is gone but the PTY is
+                                * kept alive awaiting a re-attach. */
+    volatile bool reattach;    /* Set when a new connection re-attaches. */
+    char request_id[64];       /* Panel request id (re-attach key) */
+    time_t detached_at;        /* When the session was detached. */
     pthread_t monitor_thread;  /* Monitor thread for cleanup */
     pthread_mutex_t term_mutex; /* Protects reads/writes of the term pointer
                                  * across the WS receive thread and the monitor
@@ -147,6 +152,10 @@ typedef struct {
     char ws_endpoint[512];     /* WebSocket endpoint URL (must match ws lifetime) */
     char extra_query[256];     /* Extra query parameters (must match ws lifetime) */
 } terminal_session_t;
+
+/* How long a detached session (WS gone, PTY alive) waits for a re-attach
+ * before being torn down; mirrors the Go disconnectedRetention. */
+#define TERMINAL_DETACHED_RETENTION_SEC 300
 
 /* Global registry of active terminal sessions so the main shutdown path can
  * signal them to exit and join their monitor threads before tearing down
@@ -233,10 +242,14 @@ static void sessions_join_and_cleanup(void) {
 static void on_terminal_output(terminal_t *term, const char *data, size_t len) {
     terminal_session_t *session = (terminal_session_t *)term->user_data;
     if (session && session->active && session->ws) {
-        if (ws_client_send_text(session->ws, data, len) != 0) {
+        /* Terminal output travels as binary frames, mirroring the Go
+         * reference (terminal.go readOutput uses BinaryMessage). */
+        if (ws_client_send_binary(session->ws, data, len) != 0) {
             session->active = false;
         }
     }
+    /* While detached (ws == NULL) output is intentionally dropped; the PTY
+     * stays alive so a re-attach sees fresh shell state. */
 }
 
 /* Terminal WebSocket raw data callback: handle terminal input and resize messages (WS→terminal input thread) */
@@ -255,31 +268,64 @@ static void on_terminal_ws_data(ws_client_t *client, const char *data, size_t le
     pthread_mutex_unlock(&session->term_mutex);
     if (!term) return;
 
-    /* Detect and handle resize JSON messages */
+    /* JSON control messages (RFC-style payload from the panel), mirroring
+     * the Go terminal.go handleInput: {type: resize|input|heartbeat|close}.
+     * Non-JSON text and binary frames fall through as raw keyboard input. */
     if (len > 0 && data[0] == '{') {
         cJSON *root = cJSON_Parse(data);
         if (root) {
             cJSON *type = cJSON_GetObjectItem(root, "type");
-            if (type && cJSON_IsString(type) && strcmp(type->valuestring, "resize") == 0) {
-                cJSON *cols = cJSON_GetObjectItem(root, "cols");
-                cJSON *rows = cJSON_GetObjectItem(root, "rows");
-                if (cols && rows && cJSON_IsNumber(cols) && cJSON_IsNumber(rows)) {
-                    terminal_resize(term, cols->valueint, rows->valueint);
-                    KOMARI_LOG_DEBUG("[Terminal] Resized to cols=%d rows=%d",
-                                     cols->valueint, rows->valueint);
+            if (type && cJSON_IsString(type)) {
+                if (strcmp(type->valuestring, "resize") == 0) {
+                    cJSON *cols = cJSON_GetObjectItem(root, "cols");
+                    cJSON *rows = cJSON_GetObjectItem(root, "rows");
+                    if (cols && rows && cJSON_IsNumber(cols) && cJSON_IsNumber(rows)) {
+                        terminal_resize(term, cols->valueint, rows->valueint);
+                        KOMARI_LOG_DEBUG("[Terminal] Resized to cols=%d rows=%d",
+                                         cols->valueint, rows->valueint);
+                    }
+                    cJSON_Delete(root);
+                    return;
                 }
-                cJSON_Delete(root);
-                return;
+                if (strcmp(type->valuestring, "input") == 0) {
+                    cJSON *input = cJSON_GetObjectItem(root, "input");
+                    if (input && cJSON_IsString(input) && input->valuestring) {
+                        terminal_write(term, input->valuestring,
+                                       strlen(input->valuestring));
+                    }
+                    cJSON_Delete(root);
+                    return;
+                }
+                if (strcmp(type->valuestring, "heartbeat") == 0) {
+                    /* Keepalive: no action (mirrors the Go empty case). */
+                    cJSON_Delete(root);
+                    return;
+                }
+                if (strcmp(type->valuestring, "close") == 0) {
+                    KOMARI_LOG_INFO("[Terminal] Close requested by panel");
+                    session->active = false;
+                    cJSON_Delete(root);
+                    return;
+                }
             }
             cJSON_Delete(root);
         }
+        /* Malformed JSON that starts with '{' is NOT written to the PTY:
+         * writing control-message garbage into the shell corrupts the
+         * session; the Go reference drops non-JSON text frames, but any
+         * '{'-led frame in the wild is a control message. */
+        return;
     }
 
     /* Normal terminal input: write to pseudo-terminal */
     terminal_write(term, data, len);
 }
 
-/* Terminal session monitor thread: detect exit and cleanup resources */
+/* Terminal session monitor thread: detect exit and cleanup resources.
+ * WS loss only detaches the session (PTY kept alive for
+ * TERMINAL_DETACHED_RETENTION_SEC awaiting re-attach, mirroring the Go
+ * terminal.go session map); shell exit or the retention timeout performs
+ * the actual teardown. */
 static void *terminal_monitor_thread(void *arg) {
     terminal_session_t *session = (terminal_session_t *)arg;
 
@@ -289,6 +335,14 @@ static void *terminal_monitor_thread(void *arg) {
          * blocking pthread_join for the full sleep window. */
         sleep(1);
         if (!session->active) break;
+
+        /* A re-attach clears the detached state and rebinds session->ws. */
+        if (session->detached && session->reattach) {
+            session->reattach = false;
+            session->detached = false;
+            session->detached_at = 0;
+            continue;
+        }
 
         /* Check if terminal has exited (shell closed). Snapshot term under
          * the mutex because the cleanup path below may NULL it. */
@@ -301,11 +355,36 @@ static void *terminal_monitor_thread(void *arg) {
             break;
         }
 
+        if (session->detached) {
+            /* Retention window elapsed without a re-attach: tear down. */
+            if (time(NULL) - session->detached_at >=
+                TERMINAL_DETACHED_RETENTION_SEC) {
+                KOMARI_LOG_INFO("[Terminal] Detached session %s expired after %d s",
+                                session->request_id,
+                                TERMINAL_DETACHED_RETENTION_SEC);
+                break;
+            }
+            continue; /* Keep the PTY alive while waiting. */
+        }
+
         /* Check if WebSocket has disconnected */
         if (session->ws) {
             if (!ws_client_is_connected(session->ws)) {
-                KOMARI_LOG_INFO("[Terminal] WebSocket disconnected, closing session");
-                break;
+                KOMARI_LOG_INFO("[Terminal] WebSocket disconnected, "
+                                "detaching session %s (PTY retained %d s)",
+                                session->request_id,
+                                TERMINAL_DETACHED_RETENTION_SEC);
+                /* Detach: stop the WS but keep the PTY running. The read
+                 * thread keeps writing to on_terminal_output, whose
+                 * session->active check plus the NULL ws guard below drops
+                 * output while detached. */
+                session->detached = true;
+                session->detached_at = time(NULL);
+                ws_client_t *old_ws = session->ws;
+                session->ws = NULL;
+                ws_client_stop(old_ws);
+                ws_client_disconnect(old_ws);
+                ws_client_destroy(old_ws);
             }
         }
     }
@@ -354,6 +433,57 @@ static void *terminal_monitor_thread(void *arg) {
     return NULL;
 }
 
+/* Re-attach a detached terminal session to a fresh WebSocket connection.
+ * The PTY keeps running; only the transport is replaced. Returns 0 on
+ * success; on failure the session stays detached and the caller may fall
+ * back to creating a new session. */
+static int terminal_reattach_session(terminal_session_t *session,
+                                     const char *token, const char *request_id,
+                                     const char *endpoint) {
+    KOMARI_LOG_INFO("[Terminal] Re-attaching detached session: %s", request_id);
+
+    /* Reuse the endpoint/query built for the original session. */
+    ws_client_config_t ws_config = {0};
+    ws_config.disable_compression = g_config.disable_compression;
+    ws_config.endpoint = session->ws_endpoint;
+    ws_config.token = token;
+    ws_config.extra_query = session->extra_query;
+    ws_config.ignore_cert = g_config.ignore_unsafe_cert;
+    ws_config.max_retries = 1;
+    ws_config.reconnect_interval = 1;
+    ws_config.keep_endpoint_path = true;
+
+    ws_client_t *ws = ws_client_create(&ws_config);
+    if (!ws) return -1;
+    ws_client_set_raw_handler(ws, on_terminal_ws_data);
+    ws_client_set_user_data(ws, session);
+
+    if (ws_client_connect(ws) != 0) {
+        ws_client_destroy(ws);
+        KOMARI_LOG_WARN("[Terminal] Re-attach connection failed for %s", request_id);
+        return -1;
+    }
+
+    /* Swap the transport: the monitor thread is the only other writer of
+     * session->ws (it NULLs it when detaching), and it is currently in the
+     * detached wait state, so a plain assignment under the mutex suffices. */
+    pthread_mutex_lock(&session->term_mutex);
+    session->reattach = true;
+    pthread_mutex_unlock(&session->term_mutex);
+
+    /* Give the monitor thread up to 2 seconds to observe reattach and
+     * clear the detached flag before publishing the new ws. */
+    for (int i = 0; i < 20 && session->detached; i++) {
+        usleep(100 * 1000);
+    }
+    session->ws = ws;
+    session->detached = false;
+    session->detached_at = 0;
+
+    KOMARI_LOG_INFO("[Terminal] Session re-attached: %s", request_id);
+    return 0;
+}
+
 /* Establish dedicated WebSocket connection for terminal and start pseudo-terminal session */
 static int establish_terminal_connection(const char *token, const char *request_id, const char *endpoint) {
     /* Reject CR/LF in request_id to prevent HTTP header injection via the
@@ -362,6 +492,29 @@ static int establish_terminal_connection(const char *token, const char *request_
     if (contains_crlf(request_id)) {
         KOMARI_LOG_WARN("[Terminal] Rejected request_id containing CR/LF");
         return -1;
+    }
+
+    /* Re-attach fast path (mirrors the Go acquireSession): when a detached
+     * session for this request_id still holds a live PTY, bind a fresh WS
+     * connection to it instead of spawning another shell. */
+    {
+        terminal_session_t *target = NULL;
+        pthread_mutex_lock(&g_sessions_mutex);
+        for (int i = 0; i < MAX_TERMINAL_SESSIONS; i++) {
+            terminal_session_t *cand = g_sessions[i];
+            if (cand && cand->detached && cand->active &&
+                strcmp(cand->request_id, request_id) == 0) {
+                target = cand;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_sessions_mutex);
+
+        if (target) {
+            int rc = terminal_reattach_session(target, token, request_id, endpoint);
+            if (rc == 0) return 0;
+            /* Re-attach failed: fall through and create a fresh session. */
+        }
     }
 
     /* Enforce the concurrent session limit before allocating any resources so
@@ -379,6 +532,7 @@ static int establish_terminal_connection(const char *token, const char *request_
         return -1;
     }
     session->active = false;
+    snprintf(session->request_id, sizeof(session->request_id), "%s", request_id);
 
     if (pthread_mutex_init(&session->term_mutex, NULL) != 0) {
         KOMARI_LOG_ERROR("[Terminal] Failed to init term mutex");
