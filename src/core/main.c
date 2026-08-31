@@ -109,6 +109,83 @@ static void signal_handler(int sig) {
  *
  * @param prog Program name (usually argv[0])
  */
+/* ====== Diagnostic subcommands (check-mem / list-disk) ====== */
+
+/* check-mem: dump /proc/meminfo highlights and the memory totals under
+ * each calculation mode, mirroring the Go cmd/checkMem.go output. */
+static void run_check_mem_subcommand(void) {
+    printf("--- /proc/meminfo ---\n");
+    FILE *fp = fopen(KOMARI_PATH_PROC_MEMINFO, "r");
+    if (fp) {
+        char line[256];
+        const char *const keys[] = {"MemTotal", "MemFree", "MemAvailable",
+                                    "Buffers", "Cached", "SwapTotal",
+                                    "SwapFree", "SwapCached", "Shmem",
+                                    "SReclaimable"};
+        const int n_keys = (int)(sizeof(keys) / sizeof(keys[0]));
+        char printed[16] = {0};
+        int n_printed = 0;
+        while (fgets(line, sizeof(line), fp) && n_printed < n_keys) {
+            char key[64];
+            unsigned long value;
+            if (sscanf(line, "%63[^:]: %lu", key, &value) == 2) {
+                for (int i = 0; i < n_keys; i++) {
+                    if (!printed[i] && strcmp(key, keys[i]) == 0) {
+                        printf("%-12s %lu MiB\n", key, value / 1024);
+                        printed[i] = 1;
+                        n_printed++;
+                        break;
+                    }
+                }
+            }
+        }
+        fclose(fp);
+    } else {
+        printf("(cannot open %s)\n", KOMARI_PATH_PROC_MEMINFO);
+    }
+    printf("---------------------\n");
+
+    bool modes[2] = {false, true};
+    const char *mode_names[2] = {"htop", "includeCache"};
+    for (int i = 0; i < 2; i++) {
+        mem_info_t mem, swap;
+        monitoring_get_mem_swap_info(modes[i], &mem, &swap);
+        printf("[%s] Total: %llu bytes (%llu MiB), Used: %llu bytes (%llu MiB)\n",
+               mode_names[i],
+               (unsigned long long)mem.total,
+               (unsigned long long)(mem.total / (1024 * 1024)),
+               (unsigned long long)mem.used,
+               (unsigned long long)(mem.used / (1024 * 1024)));
+    }
+}
+
+/* list-disk: print all /proc/mounts entries and the mountpoints that pass
+ * the physical-disk filters, mirroring cmd/listDisk.go. */
+static void run_list_disk_subcommand(void) {
+    printf("All Disk Partitions:\n");
+    printf("%-40s %s\n", "Mountpoint", "Fstype");
+    FILE *fp = fopen(KOMARI_PATH_PROC_MOUNTS, "r");
+    if (!fp) {
+        printf("(cannot open %s)\n", KOMARI_PATH_PROC_MOUNTS);
+        return;
+    }
+    char line[512], device[256], mountpoint[256], fstype[64], opts[256];
+    while (fgets(line, sizeof(line), fp)) {
+        if (sscanf(line, "%255s %255s %63s %255s", device, mountpoint,
+                   fstype, opts) >= 3) {
+            printf("%-40s %s\n", mountpoint, fstype);
+        }
+    }
+    fclose(fp);
+
+    /* The filtered totals (device-deduped physical disks). */
+    disk_info_t disk;
+    if (monitoring_get_disk_info(&disk) == 0) {
+        printf("Monitoring Mountpoints total: %llu bytes, free: %llu bytes\n",
+               (unsigned long long)disk.total, (unsigned long long)disk.free);
+    }
+}
+
 static void print_usage(const char *prog) {
     printf("Komari Agent (C Language Version) v%s\n", KOMARI_AGENT_C_VERSION_STRING);
     printf("\nUsage: %s [options]\n\n", prog);
@@ -1309,6 +1386,20 @@ static void *heartbeat_thread(void *arg) {
  * @return 0 on success, non-zero on failure
  */
 int main(int argc, char *argv[]) {
+    /* Diagnostic subcommands (before option parsing so they work without
+     * token/endpoint), mirroring the Go cobra subcommands. Both the hyphen
+     * and compact spellings are accepted. */
+    if (argc >= 2 &&
+        (strcmp(argv[1], "check-mem") == 0 || strcmp(argv[1], "checkmem") == 0)) {
+        run_check_mem_subcommand();
+        return 0;
+    }
+    if (argc >= 2 &&
+        (strcmp(argv[1], "list-disk") == 0 || strcmp(argv[1], "listdisk") == 0)) {
+        run_list_disk_subcommand();
+        return 0;
+    }
+
     /* OpenSSL 1.1.0+ initializes itself automatically; no explicit
      * SSL_library_init / SSL_load_error_strings / OpenSSL_add_all_algorithms
      * calls are needed. The project requires OpenSSL >= 1.1.0 (see

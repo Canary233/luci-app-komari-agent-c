@@ -15,6 +15,18 @@
 #include "update.h"
 #include "utils.h"
 #include "logger.h"
+#include "http_client.h"
+#include "compress.h"
+#include "cJSON.h"
+
+#include <stdint.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <sys/utsname.h>
+#include <sys/stat.h>
+
+#include <komari-agent-c/version.h>
 
 /* komari-agent-c package name */
 #define KOMARI_PACKAGE_NAME "komari-agent-c"
@@ -25,6 +37,14 @@
 
 /* Background check interval: 6 hours = 21600 seconds */
 #define UPDATE_CHECK_INTERVAL_SECONDS 21600
+
+/* GitHub self-update (independent binaries; mirrors the Go reference
+ * update.go). The container marker file skips snapshot updates upstream;
+ * the C agent applies the same guard to all self-updates. */
+#define GITHUB_API_RELEASES "https://api.github.com/repos/komari-monitor/komari-agent-c/releases?per_page=100&page=%d"
+#define SELFUPDATE_CONTAINER_MARKER "/.komari-agent-container"
+#define SELFUPDATE_ASSET_PREFIX "komari-agent-c-linux-"
+#define SELFUPDATE_MAX_PAGES 10
 
 /* Command output buffer size.
  * Kept large enough for "opkg list-upgradable" / "apk list --upgradable"
@@ -341,6 +361,258 @@ int update_check_available(const char *current_version) {
     return ret;
 }
 
+/* ====== GitHub self-update (independent binaries) ====== */
+
+/* Detect the GOARCH-style architecture of this build. The release assets
+ * are named komari-agent-c-linux-<goarch>; map uname -m onto that set. */
+static void selfupdate_arch(char *out, size_t out_len) {
+    struct utsname uts;
+    const char *arch = "amd64";
+    if (uname(&uts) == 0) {
+        if (strcmp(uts.machine, "x86_64") == 0) arch = "amd64";
+        else if (strcmp(uts.machine, "aarch64") == 0) arch = "arm64";
+        else if (strcmp(uts.machine, "armv7l") == 0 || strcmp(uts.machine, "armv7") == 0) arch = "armv7";
+        else if (strcmp(uts.machine, "armv6l") == 0 || strcmp(uts.machine, "arm") == 0) arch = "arm";
+        else if (strcmp(uts.machine, "mips64") == 0) arch = "mips64";
+        else if (strcmp(uts.machine, "mips") == 0 || strcmp(uts.machine, "mipsel") == 0) arch = "mipsel";
+        else if (strcmp(uts.machine, "riscv64") == 0) arch = "riscv64";
+        else if (strcmp(uts.machine, "i686") == 0 || strcmp(uts.machine, "i386") == 0) arch = "386";
+    }
+    snprintf(out, out_len, "%s", arch);
+}
+
+/* GET a URL and buffer the response body (max ~4 MiB). */
+static int selfupdate_get(const char *url, char **body_out, size_t *body_len) {
+    http_client_request_t req;
+    http_client_response_t resp;
+    memset(&req, 0, sizeof(req));
+    memset(&resp, 0, sizeof(resp));
+    req.url = url;
+    req.method = "GET";
+    req.content_type = "application/json";
+    req.ignore_cert = 0;
+    req.timeout_sec = 60;
+
+    /* GitHub API metadata headers (mirrors update.go): Accept + UA, plus a
+     * Bearer token when GITHUB_TOKEN is set (raises the rate limit). */
+    const char *token = getenv("GITHUB_TOKEN");
+    char auth_hdr[512] = "";
+    if (token && token[0]) {
+        snprintf(auth_hdr, sizeof(auth_hdr), "Authorization: Bearer %s\r\n", token);
+    }
+    char headers[768];
+    snprintf(headers, sizeof(headers),
+             "Accept: application/vnd.github+json\r\n"
+             "User-Agent: komari-agent-c\r\n"
+             "%s", auth_hdr);
+    req.extra_headers = headers;
+
+    if (http_client_request(&req, &resp) != 0 ||
+        resp.status < 200 || resp.status >= 300 ||
+        !resp.body) {
+        http_client_response_free(&resp);
+        return -1;
+    }
+    *body_out = resp.body; /* ownership moves to caller */
+    *body_len = resp.body_len;
+    return 0;
+}
+
+/* Find the newest stable (non-draft, non-prerelease) release whose assets
+ * include one for this platform. Returns a heap JSON string of the asset's
+ * browser_download_url, or NULL. */
+static char *selfupdate_find_asset(void) {
+    char arch[32];
+    selfupdate_arch(arch, sizeof(arch));
+    char want[128];
+    snprintf(want, sizeof(want), "%s%s", SELFUPDATE_ASSET_PREFIX, arch);
+
+    char *best_url = NULL;
+    char best_tag[64] = "";
+    int best_cmp = -1;
+
+    for (int page = 1; page <= SELFUPDATE_MAX_PAGES; page++) {
+        char url[256];
+        snprintf(url, sizeof(url), GITHUB_API_RELEASES, page);
+
+        char *body = NULL;
+        size_t body_len = 0;
+        if (selfupdate_get(url, &body, &body_len) != 0) break;
+
+        cJSON *arr = cJSON_Parse(body);
+        free(body);
+        if (!arr || !cJSON_IsArray(arr)) {
+            cJSON_Delete(arr);
+            break;
+        }
+
+        int count = cJSON_GetArraySize(arr);
+        if (count == 0) {
+            cJSON_Delete(arr);
+            break; /* last page */
+        }
+
+        cJSON *rel;
+        cJSON_ArrayForEach(rel, arr) {
+            cJSON *draft = cJSON_GetObjectItem(rel, "draft");
+            cJSON *pre = cJSON_GetObjectItem(rel, "prerelease");
+            if (cJSON_IsTrue(draft) || cJSON_IsTrue(pre)) continue;
+
+            cJSON *tag = cJSON_GetObjectItem(rel, "tag_name");
+            if (!tag || !cJSON_IsString(tag) || !tag->valuestring[0]) continue;
+
+            /* Stable track only: skip Snapshot- prefixed tags (mirrors the
+             * Go stable/snapshot track split). */
+            if (strncmp(tag->valuestring, "Snapshot-", 9) == 0) continue;
+
+            int cmp = update_compare_versions(tag->valuestring,
+                                              KOMARI_AGENT_C_VERSION_STRING);
+            if (cmp <= 0 || cmp <= best_cmp) continue;
+
+            cJSON *assets = cJSON_GetObjectItem(rel, "assets");
+            if (!assets || !cJSON_IsArray(assets)) continue;
+
+            cJSON *asset;
+            cJSON_ArrayForEach(asset, assets) {
+                cJSON *name = cJSON_GetObjectItem(asset, "name");
+                cJSON *url_item = cJSON_GetObjectItem(asset, "browser_download_url");
+                if (name && cJSON_IsString(name) && url_item &&
+                    cJSON_IsString(url_item) &&
+                    strcmp(name->valuestring, want) == 0) {
+                    free(best_url);
+                    best_url = strdup(url_item->valuestring);
+                    snprintf(best_tag, sizeof(best_tag), "%s", tag->valuestring);
+                    best_cmp = cmp;
+                    break;
+                }
+            }
+        }
+        cJSON_Delete(arr);
+    }
+
+    if (best_url) {
+        KOMARI_LOG_INFO("Self-update: found %s for %s", best_tag, arch);
+    }
+    return best_url;
+}
+
+/* Streaming download sink writing to a file descriptor. */
+typedef struct {
+    int fd;
+    int failed;
+} dl_sink_t;
+
+static int dl_sink_write(void *user, const char *data, size_t len) {
+    dl_sink_t *s = (dl_sink_t *)user;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = write(s->fd, data + off, len - off);
+        if (n <= 0) {
+            if (errno == EINTR) continue;
+            s->failed = 1;
+            return -1;
+        }
+        off += (size_t)n;
+    }
+    return 0;
+}
+
+/* Download a URL into a local file (streamed; large binaries must not be
+ * buffered). Returns 0 on success. */
+static int selfupdate_download(const char *url, const char *dest) {
+    int fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    if (fd < 0) return -1;
+
+    http_client_request_t req;
+    http_client_response_t resp;
+    memset(&req, 0, sizeof(req));
+    memset(&resp, 0, sizeof(resp));
+    req.url = url;
+    req.method = "GET";
+    req.ignore_cert = 0;
+    req.timeout_sec = 600;
+    dl_sink_t sink = {.fd = fd, .failed = 0};
+    req.body_writer = dl_sink_write;
+    req.writer_user = &sink;
+
+    int ret = -1;
+    if (http_client_request(&req, &resp) == 0 &&
+        resp.status >= 200 && resp.status < 300 &&
+        !sink.failed) {
+        ret = 0;
+    }
+    http_client_response_free(&resp);
+    close(fd);
+    if (ret != 0) unlink(dest);
+    return ret;
+}
+
+/* Full self-update: check GitHub Releases, download the matching asset,
+ * atomically replace the running binary and exit(42) so the service
+ * manager restarts into the new version (mirrors the Go os.Exit(42)). */
+static void selfupdate_check_and_apply(void) {
+    if (utils_file_exists(SELFUPDATE_CONTAINER_MARKER)) {
+        KOMARI_LOG_DEBUG("Self-update: container marker present, skipping");
+        return;
+    }
+
+    char *asset_url = selfupdate_find_asset();
+    if (!asset_url) return; /* up to date or no matching asset */
+
+    /* Resolve the running binary path. */
+    char exe[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0) {
+        KOMARI_LOG_WARN("Self-update: cannot resolve /proc/self/exe");
+        free(asset_url);
+        return;
+    }
+    exe[n] = '\0';
+
+    char tmp_path[PATH_MAX + 32];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.new.%d", exe, (int)getpid());
+
+    KOMARI_LOG_INFO("Self-update: downloading %s", asset_url);
+    if (selfupdate_download(asset_url, tmp_path) != 0) {
+        KOMARI_LOG_WARN("Self-update: download failed");
+        free(asset_url);
+        return;
+    }
+    free(asset_url);
+
+    /* Atomic replace: rename over the running binary. The old inode stays
+     * alive for the running process, so replacing while running is safe. */
+    if (rename(tmp_path, exe) != 0) {
+        KOMARI_LOG_WARN("Self-update: rename failed: %s", strerror(errno));
+        unlink(tmp_path);
+        return;
+    }
+    chmod(exe, 0755);
+
+    KOMARI_LOG_INFO("Self-update: binary replaced, exiting (code 42) for the "
+                    "service manager to restart into the new version");
+    exit(42);
+}
+
+/* True when this installation is managed by opkg/apk (update via the
+ * package manager instead of self-replacement). */
+static bool update_is_package_managed(void) {
+    return dir_exists(APK_STATE_DIR) || dir_exists(OPKG_STATE_DIR);
+}
+
+void update_check_and_update(void) {
+    if (update_is_package_managed()) {
+        /* Package-managed install: surface the upgrade hint only (the
+         * binary is owned by opkg/apk and must not be self-replaced). */
+        if (update_check_available(NULL) < 0) {
+            KOMARI_LOG_DEBUG("Update check: this check failed, will retry in the next cycle");
+        }
+        return;
+    }
+    /* Independent binary: full GitHub Releases self-update. */
+    selfupdate_check_and_apply();
+}
+
 void update_stop(void) {
     /* Signal the background worker to exit its loop.
      * The worker wakes up at most once per second, so it stops promptly. */
@@ -353,10 +625,9 @@ void *update_do_check_works(void *arg) {
     KOMARI_LOG_INFO("Update check: background check thread started, interval %d seconds", UPDATE_CHECK_INTERVAL_SECONDS);
 
     while (g_update_running) {
-        /* Run a check immediately */
-        if (update_check_available(NULL) < 0) {
-            KOMARI_LOG_DEBUG("Update check: this check failed, will retry in the next cycle");
-        }
+        /* Adaptive check: package-managed installs get an upgrade hint,
+         * independent binaries self-update from GitHub Releases. */
+        update_check_and_update();
 
         /* Sleep for the configured interval before checking again.
          * Break the long sleep into 1-second slices so that update_stop()

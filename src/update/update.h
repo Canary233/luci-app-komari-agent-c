@@ -74,6 +74,16 @@ int update_check_available(const char *current_version);
 void *update_do_check_works(void *arg);
 
 /**
+ * Run one adaptive update check (used by the background thread):
+ *  - opkg/apk-managed installs: check the package manager for an upgrade
+ *    and log an upgrade hint (the binary is package-owned).
+ *  - independent binaries: query GitHub Releases for a newer stable version
+ *    matching this platform, download it, atomically replace the running
+ *    binary and exit(42) so the service manager restarts into the update.
+ */
+void update_check_and_update(void);
+
+/**
  * Signal the background update checker thread to stop.
  *
  * Should be called from the main shutdown path so that the worker

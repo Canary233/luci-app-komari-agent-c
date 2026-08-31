@@ -66,9 +66,31 @@ static int url_encode(const char *src, char *dst, size_t dst_len) {
 int autodiscovery_get_file_path(char *path, size_t path_len) {
     if (!path || path_len == 0) return -1;
 
+    /* Preferred location: alongside the executable (mirrors the Go
+     * reference, which stores auto-discovery.json next to the binary and
+     * thus survives reboots). When the binary directory is not writable
+     * (OpenWrt squashfs /usr/bin) fall back to the writable /tmp path,
+     * accepting that the registration may need to be redone after a
+     * reboot. */
+    char exe[768];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+        exe[n] = '\0';
+        char *slash = strrchr(exe, '/');
+        if (slash) {
+            size_t dir_len = (size_t)(slash - exe);
+            int wn = snprintf(path, path_len, "%.*s/auto-discovery.json",
+                              (int)dir_len, exe);
+            if (wn > 0 && (size_t)wn < path_len) {
+                if (utils_file_exists(path) || access(exe[0] ? "" : ".", W_OK) == 0) {
+                    return 0; /* existing file or writable directory */
+                }
+            }
+        }
+    }
+
     const char *src = AUTODISCOVERY_FILE_PATH;
     if (strlen(src) >= path_len) return -1;
-
     strncpy(path, src, path_len - 1);
     path[path_len - 1] = '\0';
     return 0;
@@ -248,14 +270,26 @@ int autodiscovery_register(const char *endpoint,
         return -1;
     }
 
-    /* Send POST request (empty body) via the shared HTTP client */
+    /* Send POST with the {"key": ...} body, mirroring the Go reference
+     * (cmd/autodiscovery.go registerAgent). The key is also sent in the
+     * Authorization header (the panel accepts either). */
+    char body[512];
+    char *escaped_key = utils_json_escape(auto_discovery_key);
+    if (!escaped_key) return -1;
+    int body_n = snprintf(body, sizeof(body), "{\"key\":\"%s\"}", escaped_key);
+    free(escaped_key);
+    if (body_n < 0 || (size_t)body_n >= sizeof(body)) {
+        KOMARI_LOG_ERROR("Auto-discovery: registration body too long");
+        return -1;
+    }
+
     char response[HTTP_RESPONSE_BUF_SIZE];
     http_client_request_t req;
     http_client_response_t resp;
     memset(&req, 0, sizeof(req));
     memset(&resp, 0, sizeof(resp));
     req.url = url;
-    req.body = "";
+    req.body = body;
     req.extra_headers = auth_header;
     req.response_buf = response;
     req.response_len = sizeof(response);
@@ -276,8 +310,27 @@ int autodiscovery_register(const char *endpoint,
 
     memset(config, 0, sizeof(*config));
 
-    cJSON *uuid_item = cJSON_GetObjectItem(root, "uuid");
-    cJSON *token_item = cJSON_GetObjectItem(root, "token");
+    /* Response shape mirrors the Go RegisterResponse:
+     * {"status":"success","message":"...","data":{"uuid":...,"token":...}}.
+     * A flat {"uuid":...,"token":...} body is accepted as a fallback for
+     * panels that predate the status/data envelope. */
+    cJSON *status_item = cJSON_GetObjectItem(root, "status");
+    cJSON *data = cJSON_GetObjectItem(root, "data");
+    if (!data || !cJSON_IsObject(data)) data = root;
+
+    if (status_item && cJSON_IsString(status_item) &&
+        strcmp(status_item->valuestring, "success") != 0) {
+        cJSON *msg_item = cJSON_GetObjectItem(root, "message");
+        KOMARI_LOG_ERROR("Auto-discovery: registration failed: %s",
+                         msg_item && cJSON_IsString(msg_item) && msg_item->valuestring
+                             ? msg_item->valuestring
+                             : "panel returned non-success status");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    cJSON *uuid_item = cJSON_GetObjectItem(data, "uuid");
+    cJSON *token_item = cJSON_GetObjectItem(data, "token");
 
     int ret = 0;
     if (uuid_item && cJSON_IsString(uuid_item) && uuid_item->valuestring) {
