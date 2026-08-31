@@ -39,6 +39,7 @@
 #include "jsonrpc.h"
 #include "fallback.h"
 #include "v2.h"
+#include "filemgr.h"
 
 #define DEFAULT_INTERVAL 1.0
 
@@ -822,6 +823,51 @@ static void handle_ws_message(ws_client_t *client, const ws_message_t *msg) {
     }
 }
 
+/* ====== File manager dispatch (agent.file) ====== */
+
+/* File-operation worker: runs the op synchronously and reports the result.
+ * Takes ownership of params (frees it). Executes with the filemgr
+ * concurrency gate held (8 concurrent ops max, mirroring the Go
+ * maxFileStreamOperations). */
+static void *filemgr_worker(void *arg) {
+    cJSON *params = (cJSON *)arg;
+
+    /* Handler context is process-global: use the main WS client only for
+     * logging; the result upload is a plain HTTP POST. */
+    cJSON *result = filemgr_execute(&g_config, params);
+    cJSON_Delete(params);
+    if (result) {
+        filemgr_upload_result(&g_config, result);
+    }
+    filemgr_release();
+    return NULL;
+}
+
+/* File params callback invoked from the WS recv thread (or the fallback
+ * channel). Detaches a bounded worker so the recv thread never blocks. */
+static void handle_file_params(ws_client_t *client, cJSON *params) {
+    (void)client;
+    if (!filemgr_allowed(&g_config)) {
+        KOMARI_LOG_INFO("[FileMgr] Web control is disabled, dropping agent.file");
+        cJSON_Delete(params);
+        return;
+    }
+    if (filemgr_try_acquire() != 0) {
+        KOMARI_LOG_WARN("[FileMgr] Concurrency limit (%d) reached, dropping op",
+                        FILEMGR_MAX_CONCURRENT);
+        cJSON_Delete(params);
+        return;
+    }
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, filemgr_worker, params) != 0) {
+        KOMARI_LOG_ERROR("[FileMgr] Failed to spawn worker");
+        cJSON_Delete(params);
+        filemgr_release();
+        return;
+    }
+    pthread_detach(tid);
+}
+
 /* ====== Monthly traffic hook (netstatic integration) ====== */
 
 /* Fill the monthly (tx, rx) totals across all filtered interfaces from the
@@ -915,6 +961,15 @@ static int fallback_dispatch_event(const char *event_id, const char *method,
             KOMARI_LOG_WARN("[Fallback] Rejected terminal_id containing CR/LF");
         } else {
             handle_ws_message(NULL, &msg);
+        }
+        return 1;
+    }
+    if (strcmp(method, AGENT_FILE) == 0) {
+        /* File ops over the fallback channel go through the same handler;
+         * handle_file_params owns the params copy we pass it. */
+        cJSON *copy = params ? cJSON_Duplicate(params, 1) : NULL;
+        if (copy) {
+            handle_file_params(NULL, copy);
         }
         return 1;
     }
@@ -1493,6 +1548,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: Failed to create WebSocket client\n");
         return 1;
     }
+    ws_client_set_file_handler(g_ws_client, handle_file_params);
     
     ws_client_set_handler(g_ws_client, handle_ws_message);
     

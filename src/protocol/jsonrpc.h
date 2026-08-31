@@ -29,6 +29,8 @@
 #define AGENT_EVENT            "agent.event"
 #define AGENT_TERMINAL_REQUEST "agent.terminal.request"
 #define AGENT_PULL             "agent.pull"
+#define AGENT_FILE             "agent.file"
+#define AGENT_FILE_RESULT      "agent.file.result"
 
 /* JSON-RPC error object */
 typedef struct {

@@ -1200,6 +1200,24 @@ int ws_handle_v2_event(ws_client_t *client, cJSON *root) {
                 client->handler(client, &msg);
             }
             processed = 1;
+        } else if (strcmp(event.method, AGENT_FILE) == 0) {
+            /* agent.file: params = { uuid, request_id, op, args }. The
+             * registered file handler receives the full params tree and
+             * takes ownership (the ws_message_t cannot hold a cJSON tree).
+             * When no handler is registered the event is acked and dropped
+             * so the panel does not retransmit it forever. */
+            if (client->file_handler && event.params) {
+                cJSON *params_copy = cJSON_Duplicate(event.params, 1);
+                if (params_copy) {
+                    client->file_handler(client, params_copy);
+                    processed = 1;
+                }
+            } else if (!event.params) {
+                processed = 1;
+            } else {
+                KOMARI_LOG_WARN("[v2] agent.file received but no handler registered");
+                processed = 0;
+            }
         } else if (strcmp(event.method, AGENT_MESSAGE) == 0 ||
                    strcmp(event.method, AGENT_EVENT) == 0) {
             /* agent.message / agent.event: log only, no handler dispatch.
@@ -1674,6 +1692,10 @@ void ws_client_set_handler(ws_client_t *client, ws_message_handler_t handler) {
 
 void ws_client_set_raw_handler(ws_client_t *client, ws_raw_handler_t handler) {
     if (client) client->raw_handler = handler;
+}
+
+void ws_client_set_file_handler(ws_client_t *client, ws_file_handler_t handler) {
+    if (client) client->file_handler = handler;
 }
 
 void ws_client_set_user_data(ws_client_t *client, void *data) {

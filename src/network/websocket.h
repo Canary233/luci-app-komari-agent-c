@@ -72,6 +72,11 @@ typedef struct ws_client ws_client_t;
 typedef void (*ws_message_handler_t)(ws_client_t *client, const ws_message_t *msg);
 /* Raw data callback: used for terminal and similar scenarios, passes frame data directly without JSON parsing */
 typedef void (*ws_raw_handler_t)(ws_client_t *client, const char *data, size_t len);
+/* File-operation callback: receives the full agent.file params tree. The
+ * callback owns the params object (must cJSON_Delete it) and runs the
+ * operation + result upload on its own thread. */
+struct filemgr_request;
+typedef void (*ws_file_handler_t)(ws_client_t *client, cJSON *params);
 
 /**
  * Create a new WebSocket client from the given configuration.
@@ -159,6 +164,16 @@ void ws_client_set_handler(ws_client_t *client, ws_message_handler_t handler);
  * @param handler Callback function. May be NULL to clear.
  */
 void ws_client_set_raw_handler(ws_client_t *client, ws_raw_handler_t handler);
+
+/**
+ * Register the agent.file callback. Invoked from the WS receive thread with
+ * the parsed params object; the callback must delete it (typically after
+ * spawning a bounded worker thread that takes ownership).
+ *
+ * @param client  Pointer to the client.
+ * @param handler Callback or NULL to clear.
+ */
+void ws_client_set_file_handler(ws_client_t *client, ws_file_handler_t handler);
 
 /**
  * Set the user data pointer stored on the client.

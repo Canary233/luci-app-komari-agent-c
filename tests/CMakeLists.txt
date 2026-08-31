@@ -52,7 +52,7 @@ function(komari_add_test NAME)
     # module headers here for backward compatibility with existing tests.
     set(KOMARI_TEST_SUBDIRS
         core config network monitoring report terminal ping
-        utils vendor protocol autodiscovery update
+        utils vendor protocol autodiscovery update filemgr
     )
     foreach(_dir ${KOMARI_TEST_SUBDIRS})
         target_include_directories(${NAME} PRIVATE
@@ -125,6 +125,11 @@ komari_add_test(test_v2
 # test_fallback — exercises protocol/fallback.c payload builders (POST fallback channel)
 komari_add_test(test_fallback
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_fallback.c"
+)
+
+# test_filemgr — exercises filemgr.c ops (temp-directory fixtures)
+komari_add_test(test_filemgr
+    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_filemgr.c"
 )
 
 # test_report — exercises report.c + monitoring + protocol (OpenSSL/Threads)

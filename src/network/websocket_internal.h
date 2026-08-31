@@ -39,6 +39,7 @@ struct ws_client {
     ws_client_config_t config;
     ws_message_handler_t handler;
     ws_raw_handler_t raw_handler;
+    ws_file_handler_t file_handler;
     void *user_data;
     v2_state_t v2_state;   /* v2 protocol runtime state (event dedup + ACK registry) */
     /* Fragmented message accumulation state (RFC 6455 §5.4).

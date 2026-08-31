@@ -22,6 +22,7 @@ set(KOMARI_SUBDIRS
     protocol
     autodiscovery
     update
+    filemgr
     platform
 )
 
