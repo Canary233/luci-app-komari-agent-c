@@ -428,6 +428,7 @@ static int establish_terminal_connection(const char *token, const char *request_
 
     /* Create WebSocket client */
     ws_client_config_t ws_config = {0};
+    ws_config.disable_compression = g_config.disable_compression;
     ws_config.endpoint = session->ws_endpoint;
     ws_config.token = token;
     ws_config.extra_query = session->extra_query;
@@ -1290,6 +1291,8 @@ int main(int argc, char *argv[]) {
         .endpoint = ws_endpoint,
         .token = g_config.token,
         .ignore_cert = g_config.ignore_unsafe_cert,
+        .prefer_ip_version = g_config.prefer_ip_version,
+        .disable_compression = g_config.disable_compression,
         .max_retries = g_config.max_retries,
         .reconnect_interval = g_config.reconnect_interval,
         .report_interval = g_config.interval

@@ -412,6 +412,7 @@ int http_client_request(const http_client_request_t *req,
     snprintf(port_str, sizeof(port_str), "%d", url.port);
 
     struct addrinfo hints, *res = NULL, *rp;
+    int fd = -1;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -420,7 +421,72 @@ int http_client_request(const http_client_request_t *req,
         return -1;
     }
 
-    int fd = -1;
+    /* Reorder the address list per the preferred IP version. The Go
+     * reference (dnsresolver.GetDialContextWithPreference) sorts resolved
+     * addresses so the preferred family is dialed first while still
+     * falling back to the other family. */
+    if (req->prefer_ip && (req->prefer_ip[0] == '4' || req->prefer_ip[0] == '6')) {
+        int want_v4 = (req->prefer_ip[0] == '4');
+        struct addrinfo *head = NULL, *tail = NULL;
+        struct addrinfo *other_head = NULL, *other_tail = NULL;
+        for (rp = res; rp; rp = rp->ai_next) {
+            int is_v4 = (rp->ai_family == AF_INET);
+            if (is_v4 == want_v4) {
+                if (tail) tail->ai_next = rp; else head = rp;
+                tail = rp;
+            } else {
+                if (other_tail) other_tail->ai_next = rp; else other_head = rp;
+                other_tail = rp;
+            }
+        }
+        if (tail) tail->ai_next = other_head; else head = other_head;
+        if (other_tail) other_tail->ai_next = NULL;
+        rp = head;
+        /* Walk the reordered list in place (res is left untouched; the
+         * reordered chain covers the same nodes). */
+        struct addrinfo *ordered = head;
+        for (; ordered; ordered = ordered->ai_next) {
+            fd = socket(ordered->ai_family, ordered->ai_socktype, ordered->ai_protocol);
+            if (fd < 0) continue;
+
+            struct timeval tv = {.tv_sec = timeout, .tv_usec = 0};
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+            int flags = fcntl(fd, F_GETFL, 0);
+            if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+            if (connect(fd, ordered->ai_addr, ordered->ai_addrlen) == 0) {
+                if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+                break;
+            }
+            if (errno == EINPROGRESS) {
+                int connected = 0;
+                time_t deadline = time(NULL) + timeout;
+                for (;;) {
+                    time_t now = time(NULL);
+                    if (now >= deadline) break;
+                    struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+                    int pr = poll(&pfd, 1, (int)((deadline - now) * 1000));
+                    if (pr < 0 && errno == EINTR) continue;
+                    if (pr <= 0) break;
+                    int so_error = 0;
+                    socklen_t so_len = sizeof(so_error);
+                    getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &so_len);
+                    if (so_error == 0) connected = 1;
+                    break;
+                }
+                if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+                if (connected) break;
+            }
+            close(fd);
+            fd = -1;
+        }
+        freeaddrinfo(res);
+        goto have_fd;
+    }
+
+    fd = -1;
     for (rp = res; rp; rp = rp->ai_next) {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (fd < 0) continue;
@@ -460,6 +526,7 @@ int http_client_request(const http_client_request_t *req,
     }
     freeaddrinfo(res);
 
+have_fd:
     if (fd < 0) {
         KOMARI_LOG_ERROR("http: connection failed host=%s port=%d",
                          url.host, url.port);

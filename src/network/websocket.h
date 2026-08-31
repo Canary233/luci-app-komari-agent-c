@@ -36,6 +36,12 @@ typedef struct {
     const char *token;
     const char *extra_query;  /* Additional query parameters, e.g., "&id=xxx", appended after token */
     bool ignore_cert;
+    /* Preferred IP version for dialing the panel: "" (system default),
+     * "4" or "6". Mirrors the Go --prefer-ip-version flag. */
+    const char *prefer_ip_version;
+    /* Disable WebSocket permessage-deflate and HTTP gzip compression
+     * (mirrors the Go --disable-compression flag). */
+    bool disable_compression;
     int max_retries;
     int reconnect_interval;
     double report_interval;
@@ -108,6 +114,16 @@ void ws_client_disconnect(ws_client_t *client);
  * @return 0 on success, -1 on failure.
  */
 int ws_client_send_text(ws_client_t *client, const char *data, size_t len);
+
+/**
+ * Send a binary frame to the server (used for terminal output).
+ *
+ * @param client Pointer to the client.
+ * @param data   Payload data to send.
+ * @param len    Length of the payload (in bytes).
+ * @return 0 on success, -1 on failure.
+ */
+int ws_client_send_binary(ws_client_t *client, const char *data, size_t len);
 
 /**
  * Send a WebSocket ping frame to the server.

@@ -33,6 +33,7 @@
 #include "cJSON.h"
 #include "logger.h"
 #include "v2.h"
+#include "compress.h"
 #include "jsonrpc.h"
 
 #define WS_BUFFER_SIZE 4096
@@ -390,6 +391,15 @@ static int ws_handshake(ws_client_t *client, const char *host, const char *path,
         return -1;
     }
 
+    /* Offer permessage-deflate unless compression is disabled, mirroring
+     * the Go reference (websocket.go EnableCompression: !DisableCompression).
+     * Whether it actually engages depends on the server echoing the
+     * extension in its response headers. */
+    const char *extensions_hdr =
+        client->config.disable_compression
+            ? ""
+            : "Sec-WebSocket-Extensions: permessage-deflate\r\n";
+
     sn_ret = snprintf(request, sizeof(request),
         "GET %s%s HTTP/1.1\r\n"
         "Host: %s\r\n"
@@ -397,9 +407,10 @@ static int ws_handshake(ws_client_t *client, const char *host, const char *path,
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Key: %s\r\n"
         "Sec-WebSocket-Version: 13\r\n"
+        "%s"
         "User-Agent: komari-agent-c/1.0\r\n"
         "\r\n",
-        path, query, host, key);
+        path, query, host, key, extensions_hdr);
     if (sn_ret < 0 || (size_t)sn_ret >= sizeof(request)) {
         KOMARI_LOG_WARN("WebSocket handshake request truncated (needed %d, had %zu)",
                         sn_ret < 0 ? -1 : sn_ret + 1, sizeof(request));
@@ -487,6 +498,22 @@ static int ws_handshake(ws_client_t *client, const char *host, const char *path,
         return -1;
     }
 
+    /* Detect whether the server accepted permessage-deflate. Any response
+     * header named Sec-WebSocket-Extensions containing the extension token
+     * enables it (client_offers check mirrors gorilla's Negotiate). */
+    client->deflate_negotiated = false;
+    if (!client->config.disable_compression) {
+        char ext_hdr[512];
+        if (ws_extract_header(response, "Sec-WebSocket-Extensions:",
+                              ext_hdr, sizeof(ext_hdr)) == 0 &&
+            strstr(ext_hdr, "permessage-deflate") != NULL) {
+            client->deflate_negotiated = true;
+            compress_raw_deflate_init(&client->deflate_ctx);
+            compress_raw_inflate_init(&client->inflate_ctx);
+            KOMARI_LOG_INFO("[ws] permessage-deflate negotiated");
+        }
+    }
+
     return 0;
 }
 
@@ -519,7 +546,13 @@ static int send_full(ws_client_t *client, const char *data, size_t len) {
 /* Internal helper: send a single WebSocket frame with the given opcode and payload.
  * Per RFC 6455 §5.1, all frames sent from a client to the server MUST be masked
  * with a 4-byte masking key chosen by the client. */
+static int ws_send_frame_rsv1(ws_client_t *client, int opcode, const char *data, size_t len);
+
 static int ws_send_frame(ws_client_t *client, int opcode, const char *data, size_t len) {
+    return ws_send_frame_rsv1(client, opcode, data, len);
+}
+
+static int ws_send_frame_rsv1(ws_client_t *client, int opcode, const char *data, size_t len) {
     /* WS_HEADER_SIZE (14) already accounts for 2-byte basic header + 8-byte extended
      * length + 4-byte mask key, which is the worst case. Allocate the frame on the
      * heap instead of using a VLA: payloads reach 8 KiB for reports and 4 KiB for
@@ -540,7 +573,11 @@ static int ws_send_frame(ws_client_t *client, int opcode, const char *data, size
         }
     }
 
-    frame[0] = 0x80 | (opcode & 0x0F);
+    /* RSV1 marks a compressed data frame (RFC 7692 §7.2). The caller
+     * signals compression by OR-ing 0x100 into the opcode (internal
+     * convention); the wire opcode is the low nibble. */
+    bool set_rsv1 = (opcode & 0x100) != 0;
+    frame[0] = 0x80 | (set_rsv1 ? 0x40 : 0x00) | (opcode & 0x0F);
 
     if (len <= 125) {
         /* Set mask bit (0x80) and 7-bit payload length */
@@ -625,7 +662,7 @@ static int read_full(ws_client_t *client, void *buf, size_t len) {
  *   - MIN-55: Control frame payload must be <= 125 bytes and FIN must be set.
  *   - MAJ-17: Payload length exceeding the caller's buffer is an error
  *     (previously the data was silently truncated). */
-static int ws_recv_frame(ws_client_t *client, int *opcode, int *fin, char *data, size_t *len) {
+static int ws_recv_frame(ws_client_t *client, int *opcode, int *fin, int *rsv1_out, char *data, size_t *len) {
     unsigned char header[2];
 
     if (read_full(client, header, 2) != 0) return -1;
@@ -634,13 +671,28 @@ static int ws_recv_frame(ws_client_t *client, int *opcode, int *fin, char *data,
     *opcode = header[0] & 0x0F;
 
     /* MIN-56: RSV1/RSV2/RSV3 (bits 6/5/4 of byte 0) must be zero unless an
-     * extension was negotiated during the handshake. We never negotiate
-     * extensions, so any non-zero reserved bit is a protocol error. */
-    if (header[0] & 0x70) {
-        KOMARI_LOG_WARN("WebSocket protocol error: RSV bits non-zero (byte0=0x%02x)",
+     * extension was negotiated during the handshake. With permessage-deflate
+     * negotiated, RSV1 on a data frame marks a compressed payload; control
+     * frames must never carry it (RFC 7692 §6). RSV2/RSV3 always fail. */
+    int rsv1 = (header[0] & 0x40) != 0;
+    if (header[0] & 0x30) {
+        KOMARI_LOG_WARN("WebSocket protocol error: RSV2/RSV3 bits non-zero (byte0=0x%02x)",
                         header[0]);
         return -1;
     }
+    if (rsv1 && !client->deflate_negotiated) {
+        KOMARI_LOG_WARN("WebSocket protocol error: RSV1 set but permessage-deflate "
+                        "not negotiated (byte0=0x%02x)", header[0]);
+        return -1;
+    }
+    int op_pre = header[0] & 0x0F;
+    if (rsv1 && op_pre >= 0x08) {
+        KOMARI_LOG_WARN("WebSocket protocol error: RSV1 set on control frame");
+        return -1;
+    }
+    /* Record for the caller: fragment accumulation treats the first frame's
+     * RSV1 as the message-level compression flag (RFC 7692 §5.2). */
+    *rsv1_out = rsv1;
 
     /* MIN-57: Reject reserved opcodes 0x3-0x7 (data) and 0xB-0xF (control)
      * per RFC 6455 §5.2. The remaining opcodes (0x0 continuation, 0x1 text,
@@ -749,7 +801,9 @@ static void *ws_recv_thread(void *arg) {
         int fin;
         size_t len = WS_MAX_MESSAGE_SIZE;
 
-        if (ws_recv_frame(client, &opcode, &fin, buffer, &len) != 0) {
+        int rsv1 = 0;
+        int rsv1_msg = 0;
+        if (ws_recv_frame(client, &opcode, &fin, &rsv1, buffer, &len) != 0) {
             pthread_mutex_lock(&client->state_mutex);
             client->connected = false;
             pthread_mutex_unlock(&client->state_mutex);
@@ -778,6 +832,7 @@ static void *ws_recv_thread(void *arg) {
         char *msg_data = NULL;
         size_t msg_len = 0;
         int msg_opcode = 0;
+        if (opcode != 0x00) rsv1_msg = rsv1; /* message flag from first frame */
         int r = ws_fragment_accumulate(client, opcode, fin, buffer, len,
                                        &msg_data, &msg_len, &msg_opcode);
         if (r < 0) {
@@ -791,6 +846,39 @@ static void *ws_recv_thread(void *arg) {
         if (r == 0) {
             /* Fragment accumulated, waiting for more frames */
             continue;
+        }
+
+        /* Message complete: permessage-deflate decompression (RFC 7692).
+         * The message-level RSV1 comes from the first frame; the fragment
+         * accumulator preserves the wire payload intact, so decompression
+         * happens here, once per message, before any consumer sees it. */
+        if (rsv1_msg && msg_len > 0) {
+            char *plain = NULL;
+            size_t plain_len = 0;
+            if (compress_raw_inflate(&client->inflate_ctx, msg_data, msg_len,
+                                     1, WS_FRAGMENT_MAX_SIZE,
+                                     &plain, &plain_len) == 0) {
+                if (plain_len + 1 <= WS_FRAGMENT_MAX_SIZE) {
+                    if (msg_data != buffer) free(msg_data);
+                    msg_data = plain;
+                    msg_len = plain_len;
+                } else {
+                    free(plain);
+                    KOMARI_LOG_WARN("[ws] inflated message exceeds limit, closing");
+                    pthread_mutex_lock(&client->state_mutex);
+                    client->connected = false;
+                    pthread_mutex_unlock(&client->state_mutex);
+                    free(msg_data != buffer ? msg_data : NULL);
+                    break;
+                }
+            } else {
+                KOMARI_LOG_WARN("[ws] deflate decompression failed, closing");
+                pthread_mutex_lock(&client->state_mutex);
+                client->connected = false;
+                pthread_mutex_unlock(&client->state_mutex);
+                if (msg_data != buffer) free(msg_data);
+                break;
+            }
         }
 
         /* Message complete: dispatch to the appropriate handler */
@@ -1272,8 +1360,33 @@ int ws_client_connect(ws_client_t *client) {
         return -1;
     }
 
+    /* Reorder the resolved addresses when an IP version preference is set,
+     * mirroring the Go reference (dnsresolver.GetDialContextWithPreference):
+     * the preferred family dials first, the other family remains a
+     * fallback. */
+    struct addrinfo *head = res;
+    const char *prefer = client->config.prefer_ip_version;
+    if (prefer && (prefer[0] == '4' || prefer[0] == '6')) {
+        int want_v4 = (prefer[0] == '4');
+        struct addrinfo *pref_head = NULL, *pref_tail = NULL;
+        struct addrinfo *oth_head = NULL, *oth_tail = NULL;
+        for (rp = res; rp != NULL; rp = rp->ai_next) {
+            int is_v4 = (rp->ai_family == AF_INET);
+            if (is_v4 == want_v4) {
+                if (pref_tail) pref_tail->ai_next = rp; else pref_head = rp;
+                pref_tail = rp;
+            } else {
+                if (oth_tail) oth_tail->ai_next = rp; else oth_head = rp;
+                oth_tail = rp;
+            }
+        }
+        if (pref_tail) pref_tail->ai_next = oth_head;
+        if (oth_tail) oth_tail->ai_next = NULL;
+        head = pref_head ? pref_head : oth_head;
+    }
+
     client->fd = -1;
-    for (rp = res; rp != NULL; rp = rp->ai_next) {
+    for (rp = head; rp != NULL; rp = rp->ai_next) {
         int fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (fd < 0) {
             continue;
@@ -1435,6 +1548,11 @@ int ws_client_connect(ws_client_t *client) {
 }
 
 void ws_client_disconnect(ws_client_t *client) {
+    if (client && client->deflate_negotiated) {
+        compress_raw_deflate_end(&client->deflate_ctx);
+        compress_raw_inflate_end(&client->inflate_ctx);
+        client->deflate_negotiated = false;
+    }
     if (!client) return;
 
     pthread_mutex_lock(&client->state_mutex);
@@ -1479,13 +1597,66 @@ void ws_client_disconnect(ws_client_t *client) {
     }
 }
 
+/* Compress one text/binary message per RFC 7692 §7.2: deflate with
+ * Z_SYNC_FLUSH, strip the trailing 00 00 FF FF, and set RSV1 on the frame
+ * header. Empty messages map to a single 0x00 byte (RFC 7692 §7.2.3.6).
+ * Returns 0 and fills out/len on success. */
+static int ws_deflate_message(ws_client_t *client, const char *data, size_t len,
+                              char **out, size_t *out_len) {
+    char *comp = NULL;
+    size_t comp_len = 0;
+    if (compress_raw_deflate(&client->deflate_ctx, data, len, &comp, &comp_len) != 0) {
+        return -1;
+    }
+    /* Strip the trailing 4-byte sync marker; guarantee at least one byte so
+     * an empty message still produces a frame the peer can inflate. */
+    size_t wire_len = comp_len >= 4 ? comp_len - 4 : 0;
+    if (wire_len == 0) {
+        free(comp);
+        char *one = malloc(1);
+        if (!one) return -1;
+        one[0] = 0x00;
+        *out = one;
+        *out_len = 1;
+        return 0;
+    }
+    *out = comp;
+    *out_len = wire_len;
+    return 0;
+}
+
 int ws_client_send_text(ws_client_t *client, const char *data, size_t len) {
+    if (!client || !data) return -1;
+    pthread_mutex_lock(&client->state_mutex);
+    bool connected = client->connected;
+    bool compressed = client->deflate_negotiated;
+    pthread_mutex_unlock(&client->state_mutex);
+    if (!connected) return -1;
+
+    if (!compressed) {
+        return ws_send_frame(client, 0x01, data, len);
+    }
+
+    char *comp = NULL;
+    size_t comp_len = 0;
+    if (ws_deflate_message(client, data, len, &comp, &comp_len) != 0) {
+        /* Compression failure falls back to an uncompressed frame, which is
+         * always valid for the peer. */
+        return ws_send_frame(client, 0x01, data, len);
+    }
+
+    int ret = ws_send_frame_rsv1(client, 0x01 | 0x100, comp, comp_len);
+    free(comp);
+    return ret;
+}
+
+int ws_client_send_binary(ws_client_t *client, const char *data, size_t len) {
     if (!client || !data) return -1;
     pthread_mutex_lock(&client->state_mutex);
     bool connected = client->connected;
     pthread_mutex_unlock(&client->state_mutex);
     if (!connected) return -1;
-    return ws_send_frame(client, 0x01, data, len);
+    return ws_send_frame(client, 0x02, data, len);
 }
 
 int ws_client_send_ping(ws_client_t *client) {

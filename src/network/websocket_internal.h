@@ -17,8 +17,10 @@
 #include <pthread.h>
 #include <openssl/ssl.h>
 
+#include <stdbool.h>
 #include "cJSON.h"
 #include "websocket.h"
+#include "compress.h"
 
 /* Full definition of the ws_client handle declared as opaque in websocket.h.
  * Exposed here so that websocket.c and the white-box unit tests in
@@ -47,6 +49,14 @@ struct ws_client {
     size_t fragment_len;
     size_t fragment_capacity;
     int fragment_opcode;
+
+    /* permessage-deflate state (RFC 7692). deflate_ctx compresses outgoing
+     * messages, inflate_ctx decompresses incoming ones; both keep context
+     * across messages (context takeover). deflate_negotiated is set during
+     * the handshake when the server echoes the extension. */
+    bool deflate_negotiated;
+    compress_raw_t deflate_ctx;
+    compress_raw_t inflate_ctx;
 
     /* Bytes read past the HTTP handshake response. The server may start
      * sending WebSocket frames immediately after the 101 Switching Protocols

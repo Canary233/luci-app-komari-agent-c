@@ -45,6 +45,16 @@
  * nanosleep so sub-second backoff is possible on constrained stacks. */
 #define DNS_RESOLVER_RETRY_DELAY_MS 500
 
+/* Built-in public DNS servers used as a fallback when the configured custom
+ * server is unreachable, mirroring the Go reference
+ * (dnsresolver/resolver.go publicDNSServers). */
+static const char *const DNS_FALLBACK_SERVERS[] = {
+    "1.1.1.1", "8.8.8.8", "8.8.4.4", "223.5.5.5", "119.29.29.29",
+    "114.114.114.114",
+};
+#define DNS_FALLBACK_SERVERS_COUNT \
+    (int)(sizeof(DNS_FALLBACK_SERVERS) / sizeof(DNS_FALLBACK_SERVERS[0]))
+
 static char g_custom_dns[DNS_RESOLVER_MAX_ADDR_LEN] = "";
 static int g_use_custom_dns = 0;
 
@@ -83,28 +93,88 @@ int dns_resolver_is_custom(void) {
 /* Internal helper: query a specific DNS server for `hostname` over UDP and
  * return the first A or AAAA record as a string in ip_out. The record type
  * is selected based on prefer_ipv4: T_A when non-zero, T_AAAA otherwise. */
+/* Parse a DNS server specification into a sockaddr. Accepted forms (mirrors
+ * the Go normalizeDNSServer): bare IPv4 ("8.8.8.8"), bare IPv6
+ * ("2001:db8::1"), "host:port" IPv4, and "[v6]:port". A missing port
+ * defaults to 53. */
+static int dns_parse_server(const char *spec, struct sockaddr_storage *out,
+                            socklen_t *out_len) {
+    char host[DNS_RESOLVER_MAX_ADDR_LEN];
+    int port = 53;
+
+    const char *colon = NULL;
+    const char *bracket = strchr(spec, ']');
+    if (bracket) {
+        /* [v6]:port form */
+        size_t inner = (size_t)(bracket - spec) - 1;
+        if (spec[0] != '[' || inner == 0 || inner >= sizeof(host)) return -1;
+        memcpy(host, spec + 1, inner);
+        host[inner] = '\0';
+        if (bracket[1] == ':') {
+            char *end = NULL;
+            long p = strtol(bracket + 2, &end, 10);
+            if (!end || *end != '\0' || p <= 0 || p > 65535) return -1;
+            port = (int)p;
+        }
+        colon = NULL; /* host already extracted */
+    } else {
+        /* Bare v6 (multiple colons, no brackets) or host:port IPv4. */
+        const char *first = strchr(spec, ':');
+        if (first && strchr(first + 1, ':')) {
+            /* Bare IPv6 literal. */
+            snprintf(host, sizeof(host), "%s", spec);
+        } else {
+            colon = first;
+            size_t hlen = colon ? (size_t)(colon - spec) : strlen(spec);
+            if (hlen == 0 || hlen >= sizeof(host)) return -1;
+            memcpy(host, spec, hlen);
+            host[hlen] = '\0';
+            if (colon) {
+                char *end = NULL;
+                long p = strtol(colon + 1, &end, 10);
+                if (!end || *end != '\0' || p <= 0 || p > 65535) return -1;
+                port = (int)p;
+            }
+        }
+    }
+
+    memset(out, 0, sizeof(*out));
+    struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)out;
+    struct sockaddr_in *addr4 = (struct sockaddr_in *)out;
+    if (strchr(host, ':')) {
+        addr6->sin6_family = AF_INET6;
+        addr6->sin6_port = htons((uint16_t)port);
+        if (inet_pton(AF_INET6, host, &addr6->sin6_addr) != 1) return -1;
+        *out_len = sizeof(struct sockaddr_in6);
+    } else {
+        addr4->sin_family = AF_INET;
+        addr4->sin_port = htons((uint16_t)port);
+        if (inet_pton(AF_INET, host, &addr4->sin_addr) != 1) {
+            /* Hostname-form DNS server: resolve it once via the system. */
+            struct addrinfo hints, *res = NULL;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_family = AF_UNSPEC;
+            hints.ai_socktype = SOCK_DGRAM;
+            char port_str[8];
+            snprintf(port_str, sizeof(port_str), "%d", port);
+            if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) return -1;
+            memcpy(out, res->ai_addr, res->ai_addrlen);
+            *out_len = (socklen_t)res->ai_addrlen;
+            freeaddrinfo(res);
+        }
+        *out_len = sizeof(struct sockaddr_in);
+    }
+    return 0;
+}
+
 static int dns_query_server(const char *hostname, const char *dns_server, char *ip_out, size_t ip_size, int prefer_ipv4) {
     struct sockaddr_storage dns_addr;
     socklen_t addr_len = 0;
-    
+
     memset(&dns_addr, 0, sizeof(dns_addr));
-    
-    if (strchr(dns_server, ':') != NULL) {
-        struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)&dns_addr;
-        addr6->sin6_family = AF_INET6;
-        addr6->sin6_port = htons(53);
-        if (inet_pton(AF_INET6, dns_server, &addr6->sin6_addr) != 1) {
-            return -1;
-        }
-        addr_len = sizeof(struct sockaddr_in6);
-    } else {
-        struct sockaddr_in *addr4 = (struct sockaddr_in *)&dns_addr;
-        addr4->sin_family = AF_INET;
-        addr4->sin_port = htons(53);
-        if (inet_pton(AF_INET, dns_server, &addr4->sin_addr) != 1) {
-            return -1;
-        }
-        addr_len = sizeof(struct sockaddr_in);
+
+    if (dns_parse_server(dns_server, &dns_addr, &addr_len) != 0) {
+        return -1;
     }
     
     /* Select DNS query type based on IP preference: AAAA for IPv6, A for IPv4. */
@@ -276,8 +346,21 @@ int dns_resolver_lookup(const char *hostname, char *ip_out, size_t ip_size, int 
                 dns_resolver_msleep(DNS_RESOLVER_RETRY_DELAY_MS);
             }
         }
-        KOMARI_LOG_WARN("Custom DNS %s unreachable after %d attempts, falling back to system resolver",
+        KOMARI_LOG_WARN("Custom DNS %s unreachable after %d attempts, trying built-in fallback servers",
                         g_custom_dns, DNS_RESOLVER_MAX_RETRIES);
+        /* Built-in public DNS fallback list, mirroring the Go reference
+         * (resolver.go): try each server once before downgrading to the
+         * system resolver. */
+        for (int i = 0; i < DNS_FALLBACK_SERVERS_COUNT; i++) {
+            if (dns_query_server(hostname, DNS_FALLBACK_SERVERS[i],
+                                 ip_out, ip_size, prefer_ipv4) == 0) {
+                KOMARI_LOG_INFO("Resolved %s via fallback DNS server %s",
+                                hostname, DNS_FALLBACK_SERVERS[i]);
+                return 0;
+            }
+        }
+        KOMARI_LOG_WARN("All fallback DNS servers failed for %s, using system resolver",
+                        hostname);
     }
     
     struct addrinfo hints, *res, *p;
