@@ -346,7 +346,7 @@ LuCI 前端位于 `luci/` 目录，提供 Web 配置界面：
 - **env 必须单次注入**：`procd_set_param env KEY=VAL` 每调用一次都会整体替换 env 表、仅最后一对生效，所有代理环境变量以 `set --` 拼装后在同一次调用中传入（或改用 `procd_append_param env`）。
 - **令牌走环境变量**：面板令牌经 `AGENT_TOKEN` 环境变量传递，不使用 `--token` 命令行参数——`/proc/<pid>/cmdline` 全局可读，`/proc/<pid>/environ` 仅属主可读。
 - **用户缺失回退**：init 在 `komari` 系统用户不存在时回退以 root 运行；该用户由 postinst 以 busybox 兼容方式（追加 `/etc/passwd`、`/etc/group`）创建，原版 OpenWrt 无 groupadd/useradd。
-- **报告间隔下限**：`config_validate` 将 interval 钳制为 ≥1 秒（LuCI CBI 表单允许 0.5，实际以 1 秒运行）。
+- **报告间隔下限**：`config_validate` 将 interval 钳制为 ≥1 秒（LuCI CBI 表单允许 1.0，低于会被钳制）。
 
 ## 多架构支持
 

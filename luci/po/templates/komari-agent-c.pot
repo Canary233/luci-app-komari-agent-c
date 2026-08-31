@@ -205,11 +205,7 @@ msgstr ""
 msgid "Override detected IPv6 address (optional)"
 msgstr ""
 
-msgid "Enable GPU Monitoring"
-msgstr ""
 
-msgid "Enable GPU usage monitoring (if supported by hardware)"
-msgstr ""
 
 msgid "Token is required"
 msgstr ""
@@ -346,11 +342,7 @@ msgstr ""
 msgid "Auto-discovery key for auto-registration to the panel (optional)"
 msgstr ""
 
-msgid "Protocol Version"
-msgstr ""
 
-msgid "Protocol version to use (1=legacy, 2=current)"
-msgstr ""
 
 msgid "v1 (Legacy)"
 msgstr ""
@@ -377,4 +369,34 @@ msgid "Enabled"
 msgstr ""
 
 msgid "Disabled"
+msgstr ""
+
+msgid "Preferred IP Version"
+msgstr ""
+
+msgid "Preferred IP version for connecting to the panel (empty = system default)"
+msgstr ""
+
+msgid "System default"
+msgstr ""
+
+msgid "IPv4"
+msgstr ""
+
+msgid "IPv6"
+msgstr ""
+
+msgid "Memory Includes Cache"
+msgstr ""
+
+msgid "Report memory usage including cache/buffer (used = total - free)"
+msgstr ""
+
+msgid "Raw Memory Calculation"
+msgstr ""
+
+msgid "Compatibility alias kept for Go flag parity; on Linux this behaves like the default calculation"
+msgstr ""
+
+msgid "Disable WebSocket permessage-deflate and HTTP gzip compression"
 msgstr ""

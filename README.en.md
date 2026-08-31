@@ -132,25 +132,25 @@ The agent supports five configuration sources, in order of precedence from lowes
 |-------|------|---------|--------------|----------|-------------|
 | `token` | string | empty | `AGENT_TOKEN` | `--token` | Authentication token (required) |
 | `endpoint` | string | empty | `AGENT_ENDPOINT` | `--endpoint` | Panel server URL (required) |
-| `interval` | float | `1.0` | `AGENT_INTERVAL` | `--interval` | Report interval (seconds, minimum 1.0) |
-| `custom_dns` | string | empty | `AGENT_CUSTOM_DNS` | `--dns` | Custom DNS server |
+| `interval` | float | `3.0` | `AGENT_INTERVAL` | `--interval` | Report interval (seconds, minimum 1.0) |
+| `custom_dns` | string | empty | `AGENT_CUSTOM_DNS` | `--dns` | Custom DNS server (applies to all panel connections and IP detection) |
 | `ignore_unsafe_cert` | bool | `false` | `AGENT_IGNORE_UNSAFE_CERT` | `--insecure` | Ignore TLS certificate errors |
-| `disable_web_ssh` | bool | `false` | `AGENT_DISABLE_WEB_SSH` | `--disable-ssh` | Disable Web SSH |
-| `max_retries` | int | `5` | `AGENT_MAX_RETRIES` | - | Maximum reconnection attempts |
+| `disable_web_ssh` | bool | `false` | `AGENT_DISABLE_WEB_SSH` | `--disable-ssh` | Disable Web SSH, remote command execution and file manager |
+| `max_retries` | int | `3` | `AGENT_MAX_RETRIES` | - | Max WS reconnect attempts (exhausted -> HTTP POST fallback) |
 | `reconnect_interval` | int | `5` | `AGENT_RECONNECT_INTERVAL` | - | Reconnection interval (seconds) |
-| `info_report_interval` | int | `30` | `AGENT_INFO_REPORT_INTERVAL` | - | System info report interval (seconds) |
-| `month_rotate` | int | `0` | `AGENT_MONTH_ROTATE` | - | Traffic stat month rollover day (0=disable traffic stats) |
-| `protocol_version` | int | `2` | `AGENT_PROTOCOL_VERSION` | - | Protocol version (1 or 2) |
-| `disable_auto_update` | bool | `false` | `AGENT_DISABLE_AUTO_UPDATE` | - | Disable auto-update check |
-| `disable_compression` | bool | `false` | `AGENT_DISABLE_COMPRESSION` | - | Disable v2 protocol gzip compression |
-| `enable_gpu` | bool | `false` | `AGENT_ENABLE_GPU` | - | Enable GPU monitoring |
-| `include_nics` | string | empty | `AGENT_INCLUDE_NICS` | - | NICs to include (comma-separated) |
-| `exclude_nics` | string | empty | `AGENT_EXCLUDE_NICS` | - | NICs to exclude (comma-separated) |
-| `include_mountpoints` | string | empty | `AGENT_INCLUDE_MOUNTPOINTS` | - | Mount points to include (comma-separated) |
+| `info_report_interval` | int | `5` | `AGENT_INFO_REPORT_INTERVAL` | - | System info report interval (minutes) |
+| `month_rotate` | int | `0` | `AGENT_MONTH_ROTATE` | - | Traffic statistics month reset day (1-31, 0 = disabled) |
+| `prefer_ip_version` | string | empty | `AGENT_PREFER_IP_VERSION` | - | Preferred IP version for panel connections (empty/`4`/`6`) |
+| `memory_include_cache` | bool | `false` | `AGENT_MEMORY_INCLUDE_CACHE` | - | Include cache/buffer in memory usage (used = total - free) |
+| `memory_report_raw_used` | bool | `false` | `AGENT_MEMORY_REPORT_RAW_USED` | - | Compatibility alias of `memory_include_cache` (same as default on Linux) |
+| `host_proc` | string | empty | `HOST_PROC` | - | Host /proc mountpoint in container environments |
+| `disable_auto_update` | bool | `false` | `AGENT_DISABLE_AUTO_UPDATE` | - | Disable automatic update check |
+| `disable_compression` | bool | `false` | `AGENT_DISABLE_COMPRESSION` | - | Disable WebSocket permessage-deflate and HTTP gzip compression |
+| `include_nics` | string | empty | `AGENT_INCLUDE_NICS` | - | Included NICs (comma-separated, wildcards such as `eth*` supported) |
+| `exclude_nics` | string | empty | `AGENT_EXCLUDE_NICS` | - | Excluded NICs (comma-separated, wildcards supported) |
+| `include_mountpoints` | string | empty | `AGENT_INCLUDE_MOUNTPOINTS` | - | Only-counted mountpoints (semicolon `;` separated, comma accepted) |
 | `custom_ipv4` | string | empty | `AGENT_CUSTOM_IPV4` | - | Custom IPv4 address |
 | `custom_ipv6` | string | empty | `AGENT_CUSTOM_IPV6` | - | Custom IPv6 address |
-| `cf_access_client_id` | string | empty | `AGENT_CF_ACCESS_CLIENT_ID` | - | Cloudflare Access client ID (attached as auth headers on HTTP reports) |
-| `cf_access_client_secret` | string | empty | `AGENT_CF_ACCESS_CLIENT_SECRET` | - | Cloudflare Access client secret |
 | `auto_discovery_key` | string | empty | `AGENT_AUTO_DISCOVERY_KEY` | - | Auto-discovery registration key |
 
 > **Note**: Boolean environment variables accept `true`/`false`, `1`/`0`, `on`/`off`, etc.
@@ -163,13 +163,14 @@ Field names match the table above. Save as `/etc/komari/agent.json`:
 {
   "token": "your-token-here",
   "endpoint": "https://panel.example.com",
-  "interval": 2.0,
-  "max_retries": 10,
+  "interval": 3.0,
+  "max_retries": 3,
   "reconnect_interval": 10,
-  "protocol_version": 2,
-  "enable_gpu": true,
-  "include_nics": "eth0,wlan0",
-  "exclude_nics": "docker0"
+  "prefer_ip_version": "4",
+  "memory_include_cache": false,
+  "include_nics": "eth0,wlan0,eth*",
+  "exclude_nics": "docker0,veth*",
+  "include_mountpoints": "/;/mnt/data"
 }
 ```
 
@@ -193,9 +194,9 @@ The UCI config file is located at `/etc/config/komari-agent-c`, with field names
 config komari-agent-c 'komari-agent-c'
     option token 'your-token-here'
     option endpoint 'https://panel.example.com'
-    option interval '1.0'
-    option protocol_version '2'
-    option enable_gpu '0'
+    option interval '3.0'
+    option prefer_ip_version ''
+    option memory_include_cache '0'
 ```
 
 Modify via the `uci` command:

@@ -208,11 +208,7 @@ msgstr "自定义 IPv6 地址"
 msgid "Override detected IPv6 address (optional)"
 msgstr "覆盖检测到的 IPv6 地址（可选）"
 
-msgid "Enable GPU Monitoring"
-msgstr "启用 GPU 监控"
 
-msgid "Enable GPU usage monitoring (if supported by hardware)"
-msgstr "启用 GPU 使用率监控（如硬件支持）"
 
 msgid "Token is required"
 msgstr "令牌为必填项"
@@ -349,11 +345,7 @@ msgstr "自动发现密钥"
 msgid "Auto-discovery key for auto-registration to the panel (optional)"
 msgstr "用于自动注册到面板的自动发现密钥（可选）"
 
-msgid "Protocol Version"
-msgstr "协议版本"
 
-msgid "Protocol version to use (1=legacy, 2=current)"
-msgstr "使用的协议版本（1=旧版，2=当前版本）"
 
 msgid "v1 (Legacy)"
 msgstr "v1（旧版）"
@@ -381,3 +373,33 @@ msgstr "已启用"
 
 msgid "Disabled"
 msgstr "已禁用"
+
+msgid "Preferred IP Version"
+msgstr "首选 IP 版本"
+
+msgid "Preferred IP version for connecting to the panel (empty = system default)"
+msgstr "连接面板时优先使用的 IP 版本（空 = 跟随系统）"
+
+msgid "System default"
+msgstr "跟随系统"
+
+msgid "IPv4"
+msgstr "IPv4"
+
+msgid "IPv6"
+msgstr "IPv6"
+
+msgid "Memory Includes Cache"
+msgstr "内存统计含缓存"
+
+msgid "Report memory usage including cache/buffer (used = total - free)"
+msgstr "内存使用统计包含缓存/缓冲（used = total - free）"
+
+msgid "Raw Memory Calculation"
+msgstr "原始内存计算"
+
+msgid "Compatibility alias kept for Go flag parity; on Linux this behaves like the default calculation"
+msgstr "为对齐 Go 参数保留的兼容别名；在 Linux 上与默认计算方式一致"
+
+msgid "Disable WebSocket permessage-deflate and HTTP gzip compression"
+msgstr "禁用 WebSocket permessage-deflate 与 HTTP gzip 压缩"

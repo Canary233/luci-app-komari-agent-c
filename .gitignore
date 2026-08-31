@@ -40,6 +40,7 @@ bin/packages/
 *.log
 
 # Temporary files
+/komari-agent-main
 .cache/
 *.tmp
 *.bak
@@ -53,7 +54,9 @@ core.*
 
 # Trae auxiliary directory
 .trae/
-.komari-agent-main/
+
+# Zcode auxiliary directory
+.zcode/
 
 # Test coverage
 coverage/

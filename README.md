@@ -72,11 +72,11 @@ komari-agent-c --token <TOKEN> --endpoint <URL>
 |------|------|
 | `-t, --token <token>` | 认证 Token（必填） |
 | `-e, --endpoint <url>` | 面板服务器 URL（必填） |
-| `-i, --interval <seconds>` | 上报间隔秒数，默认 1.0（最小 1.0，低于会被钳制） |
+| `-i, --interval <seconds>` | 上报间隔秒数，默认 3.0（最小 1.0，低于会被钳制） |
 | `-d, --dns <server>` | 自定义 DNS 服务器 |
 | `-c, --config <file>` | JSON 配置文件路径 |
 | `-k, --insecure` | 忽略 TLS 证书错误（不推荐在生产环境使用） |
-| `-s, --disable-ssh` | 禁用 Web SSH 远程终端 |
+| `-s, --disable-ssh` | 禁用 Web SSH 远程终端、远程命令执行与文件管理 |
 | `-v, --verbose` | 启用 DEBUG 级别详细日志 |
 | `-h, --help` | 显示帮助信息 |
 
@@ -132,25 +132,25 @@ Agent 支持五种配置途径，优先级从低到高依次为：
 |------|------|--------|----------|----------|------|
 | `token` | string | 空 | `AGENT_TOKEN` | `--token` | 认证 Token（必填） |
 | `endpoint` | string | 空 | `AGENT_ENDPOINT` | `--endpoint` | 面板服务器 URL（必填） |
-| `interval` | float | `1.0` | `AGENT_INTERVAL` | `--interval` | 上报间隔（秒，最小 1.0） |
-| `custom_dns` | string | 空 | `AGENT_CUSTOM_DNS` | `--dns` | 自定义 DNS 服务器 |
+| `interval` | float | `3.0` | `AGENT_INTERVAL` | `--interval` | 上报间隔（秒，最小 1.0） |
+| `custom_dns` | string | 空 | `AGENT_CUSTOM_DNS` | `--dns` | 自定义 DNS 服务器（作用于全部面板连接与 IP 检测） |
 | `ignore_unsafe_cert` | bool | `false` | `AGENT_IGNORE_UNSAFE_CERT` | `--insecure` | 忽略 TLS 证书错误 |
-| `disable_web_ssh` | bool | `false` | `AGENT_DISABLE_WEB_SSH` | `--disable-ssh` | 禁用 Web SSH |
-| `max_retries` | int | `5` | `AGENT_MAX_RETRIES` | - | 最大重连次数 |
+| `disable_web_ssh` | bool | `false` | `AGENT_DISABLE_WEB_SSH` | `--disable-ssh` | 禁用 Web SSH 与远程命令执行、文件管理 |
+| `max_retries` | int | `3` | `AGENT_MAX_RETRIES` | - | WS 最大重连次数（耗尽后进入 HTTP POST fallback） |
 | `reconnect_interval` | int | `5` | `AGENT_RECONNECT_INTERVAL` | - | 重连间隔（秒） |
-| `info_report_interval` | int | `30` | `AGENT_INFO_REPORT_INTERVAL` | - | 系统信息上报间隔（秒） |
-| `month_rotate` | int | `0` | `AGENT_MONTH_ROTATE` | - | 流量统计月份切换日（0=禁用流量统计） |
-| `protocol_version` | int | `2` | `AGENT_PROTOCOL_VERSION` | - | 协议版本（1 或 2） |
+| `info_report_interval` | int | `5` | `AGENT_INFO_REPORT_INTERVAL` | - | 系统信息上报间隔（分钟） |
+| `month_rotate` | int | `0` | `AGENT_MONTH_ROTATE` | - | 流量统计月份重置日（1-31，0=禁用月度重置） |
+| `prefer_ip_version` | string | 空 | `AGENT_PREFER_IP_VERSION` | - | 面板连接优先使用的 IP 版本（空/`4`/`6`） |
+| `memory_include_cache` | bool | `false` | `AGENT_MEMORY_INCLUDE_CACHE` | - | 内存统计含缓存/缓冲（used = total - free） |
+| `memory_report_raw_used` | bool | `false` | `AGENT_MEMORY_REPORT_RAW_USED` | - | 与 `memory_include_cache` 兼容的别名（Linux 上与默认口径一致） |
+| `host_proc` | string | 空 | `HOST_PROC` | - | 容器环境宿主机 /proc 挂载点 |
 | `disable_auto_update` | bool | `false` | `AGENT_DISABLE_AUTO_UPDATE` | - | 禁用自动更新检查 |
-| `disable_compression` | bool | `false` | `AGENT_DISABLE_COMPRESSION` | - | 禁用 v2 协议 gzip 压缩 |
-| `enable_gpu` | bool | `false` | `AGENT_ENABLE_GPU` | - | 启用 GPU 监控 |
-| `include_nics` | string | 空 | `AGENT_INCLUDE_NICS` | - | 包含的网卡（逗号分隔） |
-| `exclude_nics` | string | 空 | `AGENT_EXCLUDE_NICS` | - | 排除的网卡（逗号分隔） |
-| `include_mountpoints` | string | 空 | `AGENT_INCLUDE_MOUNTPOINTS` | - | 包含的挂载点（逗号分隔） |
+| `disable_compression` | bool | `false` | `AGENT_DISABLE_COMPRESSION` | - | 禁用 WebSocket permessage-deflate 与 HTTP gzip 压缩 |
+| `include_nics` | string | 空 | `AGENT_INCLUDE_NICS` | - | 包含的网卡（逗号分隔，支持通配符如 `eth*`） |
+| `exclude_nics` | string | 空 | `AGENT_EXCLUDE_NICS` | - | 排除的网卡（逗号分隔，支持通配符） |
+| `include_mountpoints` | string | 空 | `AGENT_INCLUDE_MOUNTPOINTS` | - | 仅统计的挂载点（分号 `;` 分隔，兼容逗号） |
 | `custom_ipv4` | string | 空 | `AGENT_CUSTOM_IPV4` | - | 自定义 IPv4 地址 |
 | `custom_ipv6` | string | 空 | `AGENT_CUSTOM_IPV6` | - | 自定义 IPv6 地址 |
-| `cf_access_client_id` | string | 空 | `AGENT_CF_ACCESS_CLIENT_ID` | - | Cloudflare Access 客户端 ID（HTTP 上报附带认证头） |
-| `cf_access_client_secret` | string | 空 | `AGENT_CF_ACCESS_CLIENT_SECRET` | - | Cloudflare Access 客户端密钥 |
 | `auto_discovery_key` | string | 空 | `AGENT_AUTO_DISCOVERY_KEY` | - | 自动发现注册密钥 |
 
 > **注**：布尔类型环境变量接受 `true`/`false`、`1`/`0`、`on`/`off` 等常见格式。
@@ -163,13 +163,14 @@ Agent 支持五种配置途径，优先级从低到高依次为：
 {
   "token": "your-token-here",
   "endpoint": "https://panel.example.com",
-  "interval": 2.0,
-  "max_retries": 10,
+  "interval": 3.0,
+  "max_retries": 3,
   "reconnect_interval": 10,
-  "protocol_version": 2,
-  "enable_gpu": true,
-  "include_nics": "eth0,wlan0",
-  "exclude_nics": "docker0"
+  "prefer_ip_version": "4",
+  "memory_include_cache": false,
+  "include_nics": "eth0,wlan0,eth*",
+  "exclude_nics": "docker0,veth*",
+  "include_mountpoints": "/;/mnt/data"
 }
 ```
 
@@ -193,9 +194,9 @@ UCI 配置文件位于 `/etc/config/komari-agent-c`，字段名与上表一致�
 config komari-agent-c 'komari-agent-c'
     option token 'your-token-here'
     option endpoint 'https://panel.example.com'
-    option interval '1.0'
-    option protocol_version '2'
-    option enable_gpu '0'
+    option interval '3.0'
+    option prefer_ip_version ''
+    option memory_include_cache '0'
 ```
 
 通过 `uci` 命令修改：
