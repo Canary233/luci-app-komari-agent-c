@@ -137,7 +137,6 @@ int v2_state_init(v2_state_t *state)
         return -1;
     }
 
-    state->fail_count = 0;
     state->seen_events = NULL;
     state->seen_count = 0;
     state->seen_capacity = 0;
@@ -176,43 +175,8 @@ void v2_state_cleanup(v2_state_t *state)
         state->ack_capacity = 0;
     }
 
-    state->fail_count = 0;
-
     pthread_mutex_unlock(&state->mutex);
     pthread_mutex_destroy(&state->mutex);
-}
-
-int v2_note_attempt_result(v2_state_t *state, int success)
-{
-    if (!state) {
-        return 0;
-    }
-
-    pthread_mutex_lock(&state->mutex);
-
-    if (success) {
-        state->fail_count = 0;
-    } else {
-        state->fail_count++;
-    }
-
-    int count = state->fail_count;
-
-    pthread_mutex_unlock(&state->mutex);
-    return count;
-}
-
-bool v2_should_fallback_to_v1(v2_state_t *state)
-{
-    if (!state) {
-        return false;
-    }
-
-    pthread_mutex_lock(&state->mutex);
-    bool fallback = (state->fail_count >= V2_FALLBACK_THRESHOLD);
-    pthread_mutex_unlock(&state->mutex);
-
-    return fallback;
 }
 
 /* Internal function: unlocked seen-event check. The caller must hold state->mutex. */

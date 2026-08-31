@@ -1,7 +1,7 @@
 /*
  * WebSocket client implementation (RFC 6455) with optional TLS support.
  * Handles the opening handshake, frame send/receive, ping/pong keepalive,
- * JSON message dispatch and the v1/v2 protocol fallback mechanism.
+ * JSON-RPC 2.0 (v2) message dispatch.
  *
  * Copyright (C) 2026 zhz8888/luci-app-komari-agent-c Contributors
  * Licensed under MIT License
@@ -33,8 +33,6 @@
 #include "cJSON.h"
 #include "logger.h"
 #include "v2.h"
-#include "protocol.h"
-#include "v1.h"
 #include "jsonrpc.h"
 
 #define WS_BUFFER_SIZE 4096
@@ -712,65 +710,6 @@ static int ws_recv_frame(ws_client_t *client, int *opcode, int *fin, char *data,
     return 0;
 }
 
-/* Extract v1 message fields from a parsed cJSON tree into a ws_message_t.
- * All string fields are copied with strncpy(.., sizeof(field) - 1) and the
- * caller is expected to have zero-initialized `msg` so absent fields remain
- * empty strings. Exposed via websocket_internal.h for unit testing. */
-int ws_message_parse_from_json(const cJSON *root, ws_message_t *msg) {
-    if (!root || !msg) return -1;
-
-    cJSON *item = NULL;
-
-    /* Extract message field */
-    if ((item = cJSON_GetObjectItem(root, "message")) && cJSON_IsString(item)) {
-        strncpy(msg->message, item->valuestring, sizeof(msg->message) - 1);
-        msg->message[sizeof(msg->message) - 1] = '\0';
-    }
-
-    /* Extract terminal_id field (compatible with request_id) */
-    item = cJSON_GetObjectItem(root, "terminal_id");
-    if (!item) item = cJSON_GetObjectItem(root, "request_id");
-    if (item && cJSON_IsString(item)) {
-        strncpy(msg->terminal_id, item->valuestring, sizeof(msg->terminal_id) - 1);
-        msg->terminal_id[sizeof(msg->terminal_id) - 1] = '\0';
-    }
-
-    /* Extract exec_command field (compatible with command) */
-    item = cJSON_GetObjectItem(root, "exec_command");
-    if (!item) item = cJSON_GetObjectItem(root, "command");
-    if (item && cJSON_IsString(item)) {
-        strncpy(msg->exec_command, item->valuestring, sizeof(msg->exec_command) - 1);
-        msg->exec_command[sizeof(msg->exec_command) - 1] = '\0';
-    }
-
-    /* Extract exec_task_id field (compatible with task_id) */
-    item = cJSON_GetObjectItem(root, "exec_task_id");
-    if (!item) item = cJSON_GetObjectItem(root, "task_id");
-    if (item && cJSON_IsString(item)) {
-        strncpy(msg->exec_task_id, item->valuestring, sizeof(msg->exec_task_id) - 1);
-        msg->exec_task_id[sizeof(msg->exec_task_id) - 1] = '\0';
-    }
-
-    /* Extract ping_type field */
-    if ((item = cJSON_GetObjectItem(root, "ping_type")) && cJSON_IsString(item)) {
-        strncpy(msg->ping_type, item->valuestring, sizeof(msg->ping_type) - 1);
-        msg->ping_type[sizeof(msg->ping_type) - 1] = '\0';
-    }
-
-    /* Extract ping_target field */
-    if ((item = cJSON_GetObjectItem(root, "ping_target")) && cJSON_IsString(item)) {
-        strncpy(msg->ping_target, item->valuestring, sizeof(msg->ping_target) - 1);
-        msg->ping_target[sizeof(msg->ping_target) - 1] = '\0';
-    }
-
-    /* Extract ping_task_id field */
-    if ((item = cJSON_GetObjectItem(root, "ping_task_id")) && cJSON_IsNumber(item)) {
-        msg->ping_task_id = (uint32_t)item->valuedouble;
-    }
-
-    return 0;
-}
-
 /* Internal helper: background receive thread. Reads frames, handles ping/pong,
  * close frames, and dispatches text frames to the JSON or raw handler. */
 static void *ws_recv_thread(void *arg) {
@@ -811,11 +750,6 @@ static void *ws_recv_thread(void *arg) {
         size_t len = WS_MAX_MESSAGE_SIZE;
 
         if (ws_recv_frame(client, &opcode, &fin, buffer, &len) != 0) {
-            /* Receive failure: record protocol result so repeated v2 failures
-             * trigger fallback to v1 (M-8). This must be called before the
-             * thread exits, as the recv thread is the only consumer of
-             * incoming frames. */
-            ws_client_note_protocol_result(client, false);
             pthread_mutex_lock(&client->state_mutex);
             client->connected = false;
             pthread_mutex_unlock(&client->state_mutex);
@@ -872,11 +806,10 @@ static void *ws_recv_thread(void *arg) {
                  * (used for terminal sessions) */
                 client->raw_handler(client, msg_data, msg_len);
             } else if (client->handler) {
-                /* JSON mode: parse JSON and dispatch to the appropriate handler.
-                 * v2 JSON-RPC events (jsonrpc == "2.0" with a method field) are
-                 * routed to ws_handle_v2_event for dedup + method dispatch + ACK
-                 * accumulation; v1 messages fall through to the legacy field
-                 * extraction path. */
+                /* JSON mode: only JSON-RPC 2.0 events (jsonrpc == "2.0" with a
+                 * method field) are accepted, mirroring the Go reference which
+                 * unconditionally speaks the v2 protocol. Anything else is
+                 * logged and dropped. */
                 cJSON *root = cJSON_Parse(msg_data);
                 if (root) {
                     cJSON *jsonrpc = cJSON_GetObjectItem(root, "jsonrpc");
@@ -884,37 +817,17 @@ static void *ws_recv_thread(void *arg) {
                     if (jsonrpc && cJSON_IsString(jsonrpc) &&
                         strcmp(jsonrpc->valuestring, JSONRPC_VERSION) == 0 &&
                         method && cJSON_IsString(method)) {
-                        /* v2 JSON-RPC event: dispatch to the v2 handler which
-                         * handles dedup, method-based dispatch and ACK
-                         * accumulation. ws_handle_v2_event takes ownership of
-                         * root (frees it internally) to avoid re-parsing the
-                         * JSON string. */
+                        /* Dispatch to the v2 handler which handles dedup,
+                         * method-based dispatch and ACK accumulation.
+                         * ws_handle_v2_event takes ownership of root (frees it
+                         * internally) to avoid re-parsing the JSON string. */
                         ws_handle_v2_event(client, root);
                     } else {
-                        /* v1 message: extract fields via the shared parser and
-                         * invoke the handler. The parser copies each field with
-                         * strncpy(.., sizeof(field) - 1) + NUL termination so
-                         * overlong inputs are truncated rather than overflowed. */
-                        ws_message_t msg = {0};
-                        ws_message_parse_from_json(root, &msg);
+                        KOMARI_LOG_WARN("[ws] Ignoring non-JSON-RPC-2.0 message");
                         cJSON_Delete(root);
-
-                        /* Reject messages with CR/LF in panel-controlled fields
-                         * to prevent HTTP header injection via the terminal
-                         * handshake or HTTP ping request line. */
-                        if (contains_crlf(msg.terminal_id) ||
-                            contains_crlf(msg.ping_target)) {
-                            KOMARI_LOG_WARN("[ws] Rejected message with CR/LF in terminal_id or ping_target");
-                        } else {
-                            client->handler(client, &msg);
-                        }
                     }
                 } else {
                     KOMARI_LOG_WARN("Failed to parse WebSocket JSON message");
-                    /* Preserve original behavior: call handler with an empty
-                     * message so the handler can still run its default path. */
-                    ws_message_t msg = {0};
-                    client->handler(client, &msg);
                 }
             }
         } else if (msg_opcode == 0x02) {
@@ -1187,7 +1100,7 @@ int ws_handle_v2_event(ws_client_t *client, cJSON *root) {
             processed = 1;
         } else if (strcmp(event.method, AGENT_TERMINAL_REQUEST) == 0) {
             /* agent.terminal.request: params = { request_id }
-             * The v1 handler dispatches terminal requests when terminal_id is
+             * The handler dispatches terminal requests when terminal_id is
              * non-empty, so we populate terminal_id and leave message empty. */
             if (event.params) {
                 v2_extract_string(event.params, "request_id",
@@ -1236,7 +1149,6 @@ ws_client_t *ws_client_create(const ws_client_config_t *config) {
     client->use_tls = false;
     client->ssl = NULL;
     client->ssl_ctx = NULL;
-    client->protocol_version = PROTOCOL_VERSION_V2;
 
     if (config) {
         memcpy(&client->config, config, sizeof(ws_client_config_t));
@@ -1318,37 +1230,20 @@ int ws_client_connect(ws_client_t *client) {
     int port;
 
     if (parse_url(client->config.endpoint, scheme, host, &port, path) != 0) {
-        /* Record protocol failure so repeated v2 endpoint failures trigger
-         * fallback to v1 (M-8). */
-        ws_client_note_protocol_result(client, false);
         return -1;
     }
 
-    /* Override the request path based on the negotiated protocol version.
-     * The v2 protocol uses a JSON-RPC endpoint, while v1 uses the legacy
-     * report endpoint. The token query string is appended separately in
-     * ws_handshake, so only the path component is selected here. This
-     * mirrors the Go reference implementation (server/websocket.go,
-     * buildWebSocketEndpoint) which picks the path by protocol version.
-     *
-     * Clients with keep_endpoint_path set (the terminal session) keep the
-     * path parsed from their endpoint instead: /api/clients/terminal is a
-     * dedicated endpoint and must not be rewritten to the RPC/report path. */
+    /* All client-facing connections speak JSON-RPC 2.0 against the v2 RPC
+     * endpoint (the token query string is appended separately in
+     * ws_handshake). Clients with keep_endpoint_path set (the terminal
+     * session) keep the path parsed from their endpoint instead:
+     * /api/clients/terminal is a dedicated endpoint and must not be
+     * rewritten. */
     if (!client->config.keep_endpoint_path) {
-        if (ws_client_should_use_current_protocol(client)) {
-            int path_ret = snprintf(path, WS_PATH_MAX, "%s", V2_RPC_ENDPOINT);
-            if (path_ret < 0 || (size_t)path_ret >= WS_PATH_MAX) {
-                KOMARI_LOG_WARN("v2 RPC endpoint path truncated");
-                ws_client_note_protocol_result(client, false);
-                return -1;
-            }
-        } else {
-            int path_ret = snprintf(path, WS_PATH_MAX, "%s", "/api/clients/report");
-            if (path_ret < 0 || (size_t)path_ret >= WS_PATH_MAX) {
-                KOMARI_LOG_WARN("v1 report endpoint path truncated");
-                ws_client_note_protocol_result(client, false);
-                return -1;
-            }
+        int path_ret = snprintf(path, WS_PATH_MAX, "%s", V2_RPC_ENDPOINT);
+        if (path_ret < 0 || (size_t)path_ret >= WS_PATH_MAX) {
+            KOMARI_LOG_WARN("v2 RPC endpoint path truncated");
+            return -1;
         }
     }
 
@@ -1369,13 +1264,11 @@ int ws_client_connect(ws_client_t *client) {
         /* Port is validated by parse_url as 1..65535, so at most 5 digits.
          * Truncation is impossible in practice but check anyway. */
         KOMARI_LOG_WARN("Port string truncated");
-        ws_client_note_protocol_result(client, false);
         return -1;
     }
 
     int gai_err = getaddrinfo(host, port_str, &hints, &res);
     if (gai_err != 0) {
-        ws_client_note_protocol_result(client, false);
         return -1;
     }
 
@@ -1400,7 +1293,6 @@ int ws_client_connect(ws_client_t *client) {
 
     if (client->fd < 0) {
         /* all connect attempts failed */
-        ws_client_note_protocol_result(client, false);
         return -1;
     }
     
@@ -1412,7 +1304,6 @@ int ws_client_connect(ws_client_t *client) {
         if (!client->ssl_ctx) {
             close(client->fd);
             client->fd = -1;
-            ws_client_note_protocol_result(client, false);
             return -1;
         }
         
@@ -1439,7 +1330,6 @@ int ws_client_connect(ws_client_t *client) {
             client->ssl_ctx = NULL;
             close(client->fd);
             client->fd = -1;
-            ws_client_note_protocol_result(client, false);
             return -1;
         }
         
@@ -1466,7 +1356,6 @@ int ws_client_connect(ws_client_t *client) {
             client->ssl_ctx = NULL;
             close(client->fd);
             client->fd = -1;
-            ws_client_note_protocol_result(client, false);
             return -1;
         }
     }
@@ -1483,7 +1372,6 @@ int ws_client_connect(ws_client_t *client) {
         }
         close(client->fd);
         client->fd = -1;
-        ws_client_note_protocol_result(client, false);
         return -1;
     }
 
@@ -1538,12 +1426,10 @@ int ws_client_connect(ws_client_t *client) {
         pthread_mutex_lock(&client->state_mutex);
         client->connected = false;
         pthread_mutex_unlock(&client->state_mutex);
-        ws_client_note_protocol_result(client, false);
         return -1;
     }
 
     /* Connection established successfully, record protocol attempt result (reset failure count, upgrade back to v2 if needed) */
-    ws_client_note_protocol_result(client, true);
 
     return 0;
 }
@@ -1599,13 +1485,7 @@ int ws_client_send_text(ws_client_t *client, const char *data, size_t len) {
     bool connected = client->connected;
     pthread_mutex_unlock(&client->state_mutex);
     if (!connected) return -1;
-    int ret = ws_send_frame(client, 0x01, data, len);
-    if (ret != 0) {
-        /* Send failure: record protocol result so repeated v2 failures
-         * trigger fallback to v1 (M-8). */
-        ws_client_note_protocol_result(client, false);
-    }
-    return ret;
+    return ws_send_frame(client, 0x01, data, len);
 }
 
 int ws_client_send_ping(ws_client_t *client) {
@@ -1660,45 +1540,3 @@ void ws_client_stop(ws_client_t *client) {
     pthread_mutex_unlock(&client->state_mutex);
 }
 
-/* ================ Protocol fallback mechanism implementation ================ */
-
-protocol_version_t ws_client_get_protocol_version(ws_client_t *client) {
-    if (!client) return PROTOCOL_VERSION_V1;
-    return (protocol_version_t)client->protocol_version;
-}
-
-bool ws_client_should_use_current_protocol(ws_client_t *client) {
-    if (!client) return false;
-    /* Fall back to v1 when consecutive v2 failures reach threshold (3 times) */
-    if (v2_should_fallback_to_v1(&client->v2_state)) {
-        return false;
-    }
-    return true;
-}
-
-void ws_client_note_protocol_result(ws_client_t *client, bool success) {
-    if (!client) return;
-
-    if (success) {
-        /* Success: reset failure count and automatically upgrade back to v2 */
-        v2_note_attempt_result(&client->v2_state, 1);
-        if (client->protocol_version != PROTOCOL_VERSION_V2) {
-            KOMARI_LOG_INFO("[Protocol] Upgrading to v2 after successful connection");
-            client->protocol_version = PROTOCOL_VERSION_V2;
-        }
-    } else {
-        /* Failure: increment failure count */
-        int fail_count = v2_note_attempt_result(&client->v2_state, 0);
-        KOMARI_LOG_DEBUG("[Protocol] v2 attempt failed (%d/%d)",
-                         fail_count, V2_FALLBACK_THRESHOLD);
-
-        /* Fall back to v1 when failure count reaches threshold */
-        if (v2_should_fallback_to_v1(&client->v2_state)) {
-            if (client->protocol_version != PROTOCOL_VERSION_V1) {
-                KOMARI_LOG_WARN("[Protocol] v2 failed %d times, falling back to v1",
-                                V2_FALLBACK_THRESHOLD);
-                client->protocol_version = PROTOCOL_VERSION_V1;
-            }
-        }
-    }
-}

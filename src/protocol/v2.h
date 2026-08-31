@@ -17,9 +17,6 @@
 /* v2 protocol endpoint constants */
 #define V2_RPC_ENDPOINT "/api/clients/v2/rpc"
 
-/* Threshold of v2 failures after which the agent falls back to v1 */
-#define V2_FALLBACK_THRESHOLD 3
-
 /* Maximum number of seen event IDs; the oldest is removed when full */
 #define V2_SEEN_EVENTS_MAX 1000
 
@@ -38,8 +35,6 @@
 
 /* v2 protocol runtime state */
 typedef struct {
-    int fail_count;             /* Number of consecutive v2 failures */
-
     /* Array of seen event IDs (used for deduplication) */
     char **seen_events;
     int seen_count;
@@ -109,24 +104,6 @@ int v2_state_init(v2_state_t *state);
  * @param state Pointer to the v2_state_t structure to clean up.
  */
 void v2_state_cleanup(v2_state_t *state);
-
-/**
- * Record the result of a v2 attempt.
- *
- * @param state   Pointer to the v2 state.
- * @param success 1 means success (resets the failure counter);
- *                0 means failure (increments the counter by one).
- * @return The current failure count.
- */
-int v2_note_attempt_result(v2_state_t *state, int success);
-
-/**
- * Determine whether to downgrade to v1.
- *
- * @param state Pointer to the v2 state.
- * @return true when the number of consecutive failures reaches the threshold (3).
- */
-bool v2_should_fallback_to_v1(v2_state_t *state);
 
 /**
  * Add a seen event ID (used for deduplication).

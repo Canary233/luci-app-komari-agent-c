@@ -38,8 +38,7 @@ struct ws_client {
     ws_message_handler_t handler;
     ws_raw_handler_t raw_handler;
     void *user_data;
-    v2_state_t v2_state;   /* v2 protocol runtime state, used for protocol fallback mechanism */
-    int protocol_version;  /* Currently active protocol version (protocol_version_t) */
+    v2_state_t v2_state;   /* v2 protocol runtime state (event dedup + ACK registry) */
     /* Fragmented message accumulation state (RFC 6455 §5.4).
      * fragment_buf accumulates continuation frame payloads until a final
      * frame (FIN=1) is received. Only the recv thread reads/writes these
@@ -81,25 +80,6 @@ int ws_compute_accept_key(const char *key, char *accept_key, size_t accept_key_s
  * masked) and the receive path (server frames may be masked). Exposed so
  * tests can verify mask reversibility without duplicating the loop. */
 void ws_apply_mask(unsigned char *data, size_t len, const unsigned char mask[4]);
-
-/* Extract v1 message fields from a parsed cJSON tree into a ws_message_t.
- *
- * Implements the same field-extraction logic the recv thread uses for v1
- * messages: reads "message", "terminal_id" (fallback "request_id"),
- * "exec_command" (fallback "command"), "exec_task_id" (fallback "task_id"),
- * "ping_type", "ping_target", "ping_task_id". All string fields are copied
- * with strncpy(.., sizeof(field) - 1) and explicitly NUL-terminated so that
- * overlong inputs are truncated rather than overflowed.
- *
- * The caller is responsible for zero-initializing `msg` before the call
- * (e.g., `ws_message_t msg = {0};`) so that absent fields remain empty
- * strings rather than uninitialized memory.
- *
- * @param root Parsed cJSON tree. May be NULL; the function returns -1 and
- *             leaves `msg` untouched.
- * @param msg  Output message struct. Must not be NULL.
- * @return 0 on success, -1 if root or msg is NULL. */
-int ws_message_parse_from_json(const cJSON *root, ws_message_t *msg);
 
 /* ====== Fragment accumulation (RFC 6455 §5.4) ======
  * The following helper is an internal function exposed for unit testing.

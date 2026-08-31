@@ -721,23 +721,20 @@ static void handle_ws_message(ws_client_t *client, const ws_message_t *msg) {
  * Reporting thread: maintains the WebSocket connection and periodically
  * sends status reports and basic info to the panel.
  *
- * The payload format is selected per connection based on the negotiated
- * protocol version: when ws_client_should_use_current_protocol returns true the report
- * is wrapped as a JSON-RPC 2.0 notification (method = "agent.report" /
- * "agent.basicInfo"); otherwise the original v1 JSON is sent. This mirrors
- * the Go reference implementation (server/websocket.go, EstablishWebSocket
- * Connection) which picks the payload format from the active protocol
- * version on every tick.
+ * All payloads use the JSON-RPC 2.0 (v2) envelope, mirroring the Go
+ * reference implementation (server/websocket.go, EstablishWebSocket
+ * Connection). Reports carry the pending ACK event IDs so the server can
+ * stop retransmitting processed events.
  *
  * @param arg Unused thread argument
  * @return NULL
  */
 static void *report_thread(void *arg) {
     (void)arg;
-    
+
     char report_buf[8192];
     time_t last_basic_info = 0;
-    
+
     while (g_running) {
         bool connected = ws_client_is_connected(g_ws_client);
 
@@ -747,25 +744,22 @@ static void *report_thread(void *arg) {
              * dashboard reflects the outage instead of stale metrics from
              * the last healthy tick. */
             report_write_status_file(&g_config, NULL, false);
-            
+
             int retries = 0;
             while (retries < g_config.max_retries && g_running) {
                 if (ws_client_connect(g_ws_client) == 0) {
                     KOMARI_LOG_INFO("[WebSocket] Connected successfully");
-                    
-                    /* Send basic info on (re)connect using the negotiated
-                     * protocol version so the server receives the right
-                     * payload format immediately after the handshake. */
-                    bool use_v2 = ws_client_should_use_current_protocol(g_ws_client);
-                    int len = use_v2
-                        ? report_generate_basic_info_v2(&g_config, report_buf, sizeof(report_buf))
-                        : report_generate_basic_info(&g_config, report_buf, sizeof(report_buf));
+
+                    /* Send basic info right after the handshake so the server
+                     * has an up-to-date inventory before the first timed
+                     * upload. */
+                    int len = report_generate_basic_info_v2(&g_config, report_buf, sizeof(report_buf));
                     if (len > 0) {
                         ws_client_send_text(g_ws_client, report_buf, len);
                     }
                     break;
                 }
-                
+
                 retries++;
                 KOMARI_LOG_WARN("[WebSocket] Connection failed, retry %d/%d", retries, g_config.max_retries);
                 /* Sleep in 1-second slices so the thread observes g_running
@@ -777,7 +771,7 @@ static void *report_thread(void *arg) {
                     sleep(1);
                 }
             }
-            
+
             if (retries >= g_config.max_retries) {
                 KOMARI_LOG_ERROR("[WebSocket] Max retries reached, will retry again");
                 /* Continue the outer loop instead of exiting the report thread:
@@ -787,17 +781,12 @@ static void *report_thread(void *arg) {
                 continue;
             }
         }
-        
-        /* Pick the payload format from the current protocol version. The
-         * version may change between ticks due to v2->v1 fallback, so it
-         * must be re-evaluated on every report cycle. */
-        bool use_v2 = ws_client_should_use_current_protocol(g_ws_client);
 
-        /* For v2 reports, snapshot the pending ACK event IDs and include them
-         * in the report payload so the server can stop retransmitting events
-         * the agent has already processed. The snapshot is taken under the
-         * v2 state mutex, so it is safe even if the recv thread is
-         * concurrently adding new ACKs via ws_handle_v2_event. */
+        /* Snapshot the pending ACK event IDs and include them in the report
+         * payload so the server can stop retransmitting events the agent has
+         * already processed. The snapshot is taken under the v2 state mutex,
+         * so it is safe even if the recv thread is concurrently adding new
+         * ACKs via ws_handle_v2_event. */
         /* Size the snapshot buffer to V2_ACK_IDS_MAX so the full pending
          * ACK set is reported in a single cycle. A 256-entry buffer silently
          * truncated to 256 while v2_clear_acks removed all 1024,
@@ -812,18 +801,13 @@ static void *report_thread(void *arg) {
         report_status_metrics_t status_metrics;
         memset(&status_metrics, 0, sizeof(status_metrics));
 
-        if (use_v2) {
-            v2_snapshot_ack_ids(ws_client_get_v2_state(g_ws_client), ack_buf,
-                                (int)(sizeof(ack_buf) / sizeof(ack_buf[0])),
-                                &ack_count);
-            len = report_generate_v2_with_acks_ex(&g_config, &g_net_state, report_buf,
-                                                  sizeof(report_buf),
-                                                  ack_count > 0 ? ack_buf : NULL,
-                                                  ack_count, &status_metrics);
-        } else {
-            len = report_generate_ex(&g_config, &g_net_state, report_buf, sizeof(report_buf),
-                                     &status_metrics);
-        }
+        v2_snapshot_ack_ids(ws_client_get_v2_state(g_ws_client), ack_buf,
+                            (int)(sizeof(ack_buf) / sizeof(ack_buf[0])),
+                            &ack_count);
+        len = report_generate_v2_with_acks_ex(&g_config, &g_net_state, report_buf,
+                                              sizeof(report_buf),
+                                              ack_count > 0 ? ack_buf : NULL,
+                                              ack_count, &status_metrics);
 
         bool is_connected = ws_client_is_connected(g_ws_client);
 
@@ -831,7 +815,7 @@ static void *report_thread(void *arg) {
             if (ws_client_send_text(g_ws_client, report_buf, len) != 0) {
                 KOMARI_LOG_ERROR("[WebSocket] Failed to send data");
                 ws_client_disconnect(g_ws_client);
-            } else if (use_v2 && ack_count > 0) {
+            } else if (ack_count > 0) {
                 /* Report sent successfully: clear the ACK IDs that were
                  * included in the snapshot so they are not re-sent next cycle.
                  * New ACKs added between snapshot and clear (by the recv
@@ -854,13 +838,7 @@ static void *report_thread(void *arg) {
 
         time_t now = time(NULL);
         if (now - last_basic_info >= g_config.info_report_interval * 60) {
-            /* Re-evaluate the protocol version for the basic info payload,
-             * in case the connection was retried with a different version
-             * since the last report tick. */
-            use_v2 = ws_client_should_use_current_protocol(g_ws_client);
-            len = use_v2
-                ? report_generate_basic_info_v2(&g_config, report_buf, sizeof(report_buf))
-                : report_generate_basic_info(&g_config, report_buf, sizeof(report_buf));
+            len = report_generate_basic_info_v2(&g_config, report_buf, sizeof(report_buf));
 
             is_connected = ws_client_is_connected(g_ws_client);
 
@@ -869,7 +847,7 @@ static void *report_thread(void *arg) {
             }
             last_basic_info = now;
         }
-        
+
         /* Sleep in 1-second slices so the thread observes g_running
          * promptly during shutdown. Without this, a large interval
          * (e.g. 60s) would delay pthread_join in the cleanup path for

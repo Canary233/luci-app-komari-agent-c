@@ -5,7 +5,6 @@
  *   - v2_state_init / v2_state_cleanup lifecycle
  *   - v2_add_seen_event capacity expansion order (m-6 regression)
  *   - v2_add_ack_event / v2_snapshot_ack_ids (M-5 concurrency-safe snapshot)
- *   - v2_note_attempt_result / v2_should_fallback_to_v1 fallback threshold
  */
 
 #include "unity.h"
@@ -27,7 +26,6 @@ void tearDown(void) {
 void test_v2_state_init_succeeds(void) {
     v2_state_t state;
     TEST_ASSERT_EQUAL_INT(0, v2_state_init(&state));
-    TEST_ASSERT_EQUAL_INT(0, state.fail_count);
     TEST_ASSERT_EQUAL_INT(0, state.seen_count);
     TEST_ASSERT_EQUAL_INT(0, state.ack_count);
     v2_state_cleanup(&state);
@@ -177,28 +175,6 @@ void test_v2_clear_acks_resets_count(void) {
     v2_state_cleanup(&state);
 }
 
-/* ====== v2_note_attempt_result / v2_should_fallback_to_v1 ====== */
-
-void test_v2_fallback_threshold(void) {
-    v2_state_t state;
-    TEST_ASSERT_EQUAL_INT(0, v2_state_init(&state));
-
-    TEST_ASSERT_FALSE(v2_should_fallback_to_v1(&state));
-
-    v2_note_attempt_result(&state, 0);
-    v2_note_attempt_result(&state, 0);
-    TEST_ASSERT_FALSE(v2_should_fallback_to_v1(&state));
-
-    v2_note_attempt_result(&state, 0);
-    TEST_ASSERT_TRUE(v2_should_fallback_to_v1(&state));
-
-    /* Success resets the failure counter. */
-    v2_note_attempt_result(&state, 1);
-    TEST_ASSERT_FALSE(v2_should_fallback_to_v1(&state));
-
-    v2_state_cleanup(&state);
-}
-
 /* ====== Concurrency test ====== */
 
 /* Stress test: multiple producer threads call v2_add_ack_event and
@@ -285,7 +261,6 @@ int main(void) {
     RUN_TEST(test_v2_clear_acks_resets_count);
 
     /* Fallback threshold */
-    RUN_TEST(test_v2_fallback_threshold);
 
     /* Concurrency */
     RUN_TEST(test_v2_concurrent_access_no_crash);

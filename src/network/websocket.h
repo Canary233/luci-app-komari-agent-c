@@ -1,5 +1,5 @@
 /*
- * WebSocket client (ws/wss) with TLS support and v1/v2 protocol fallback.
+ * WebSocket client (ws/wss) with TLS support and JSON-RPC 2.0 (v2) dispatch.
  *
  * Copyright (C) 2026 zhz8888/luci-app-komari-agent-c Contributors
  * Licensed under MIT License
@@ -13,7 +13,6 @@
 #include <stddef.h>
 
 #include "v2.h"
-#include "protocol.h"
 
 #define WS_MAX_MESSAGE_SIZE (64 * 1024)
 #define WS_PING_INTERVAL 30
@@ -163,41 +162,6 @@ void ws_client_set_user_data(ws_client_t *client, void *data);
  * @param client Pointer to the client.
  */
 void ws_client_stop(ws_client_t *client);
-
-/* Protocol fallback mechanism related interfaces */
-
-/**
- * Get the currently used protocol version.
- *
- * @param client Pointer to the client.
- * @return PROTOCOL_VERSION_V1 or PROTOCOL_VERSION_V2; returns
- *         PROTOCOL_VERSION_V1 when client is NULL.
- */
-protocol_version_t ws_client_get_protocol_version(ws_client_t *client);
-
-/**
- * Check whether the currently active protocol should be used for the next
- * report cycle.
- *
- * The client tracks consecutive v2 failures and falls back to v1 once the
- * threshold (V2_FALLBACK_THRESHOLD) is reached. This accessor centralizes
- * that decision so callers (main.c report loop, ws_client_connect path
- * selection) do not need to inspect protocol_version or v2_state directly.
- *
- * @param client Pointer to the client.
- * @return true when the active protocol should be used (i.e. the fallback
- *         threshold has not been reached); false otherwise.
- */
-bool ws_client_should_use_current_protocol(ws_client_t *client);
-
-/**
- * Record protocol attempt result (used for the protocol fallback mechanism).
- *
- * @param client  Pointer to the client.
- * @param success true indicates this connection/communication succeeded,
- *                false indicates failure.
- */
-void ws_client_note_protocol_result(ws_client_t *client, bool success);
 
 /**
  * Check whether the client is currently connected to the server.

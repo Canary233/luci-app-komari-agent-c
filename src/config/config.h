@@ -13,7 +13,6 @@
 #include <stdbool.h>
 
 #include "komari_errno.h"
-#include "protocol.h"
 
 #define MAX_TOKEN_LEN 256
 #define MAX_ENDPOINT_LEN 512

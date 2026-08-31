@@ -142,7 +142,3 @@ komari_add_test(test_update
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_update.c"
 )
 
-# test_v1 — exercises v1.c + cJSON (payload construction, ownership)
-komari_add_test(test_v1
-    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_v1.c"
-)
