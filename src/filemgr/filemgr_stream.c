@@ -29,6 +29,22 @@
 /* Per-transfer HTTP timeout (Go: 30 minutes). */
 #define TRANSFER_HTTP_TIMEOUT_SEC (30 * 60)
 
+/* Validate a panel-supplied transfer identifier (transfer_id, transfer_token,
+ * upload_id): these flow into HTTP request headers, the URL path and local
+ * part-file names, so CR/LF (header injection) and path separators (part-file
+ * path escape) must be rejected. Mirrors the CRLF guards the codebase applies
+ * to terminal_id/ping_target. */
+static bool transfer_id_valid(const char *s) {
+    if (!s || !s[0]) return false;
+    if (strlen(s) > 128) return false;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        unsigned char c = *p;
+        if (c < 0x20 || c == 0x7F) return false;       /* control chars, CR/LF */
+        if (c == '/' || c == '\\') return false;       /* path separators */
+    }
+    return true;
+}
+
 /* ------------------------------------------------------------------ */
 /* args helpers                                                        */
 /* ------------------------------------------------------------------ */
@@ -146,6 +162,10 @@ static cJSON *op_download_stream(const cJSON *args, const agent_config_t *config
     const char *transfer_token = args_str(args, "transfer_token");
     if (!path_raw || !transfer_id || !transfer_token) {
         snprintf(err, err_len, "invalid arguments");
+        return NULL;
+    }
+    if (!transfer_id_valid(transfer_id) || !transfer_id_valid(transfer_token)) {
+        snprintf(err, err_len, "invalid transfer identifier");
         return NULL;
     }
     long long offset = args_ll(args, "offset", 0);
@@ -301,6 +321,11 @@ static cJSON *op_upload_stream(const cJSON *args, const agent_config_t *config,
         snprintf(err, err_len, "invalid arguments");
         return NULL;
     }
+    if (!transfer_id_valid(upload_id) || !transfer_id_valid(transfer_id) ||
+        !transfer_id_valid(transfer_token)) {
+        snprintf(err, err_len, "invalid transfer identifier");
+        return NULL;
+    }
     long long offset = args_ll(args, "offset", 0);
     long long chunk_index = args_ll(args, "chunk_index", 0);
     long long chunk_size = args_ll(args, "chunk_size", 0);
@@ -432,10 +457,30 @@ static cJSON *op_upload_commit(const cJSON *args, const agent_config_t *config,
         snprintf(err, err_len, "invalid arguments");
         return NULL;
     }
+    if (!transfer_id_valid(upload_id)) {
+        snprintf(err, err_len, "invalid transfer identifier");
+        return NULL;
+    }
     long long total_size = args_ll(args, "total_size", 0);
     long long chunk_size = args_ll(args, "chunk_size", FILEMGR_CHUNK_DEFAULT);
     long long chunk_count = args_ll(args, "chunk_count", 0);
     if (chunk_size <= 0) chunk_size = FILEMGR_CHUNK_DEFAULT;
+    if (chunk_size > (long long)FILEMGR_CHUNK_MAX) {
+        snprintf(err, err_len, "chunk_size exceeds limit");
+        return NULL;
+    }
+    /* Commit requires the full upload bookkeeping (Go commitFileUpload
+     * demands totalSize > 0 && chunkCount > 0): without it the size check
+     * below degenerates (expected_min <= 0) and an incomplete upload could
+     * be published. */
+    if (total_size <= 0 || chunk_count <= 0) {
+        snprintf(err, err_len, "commit requires total_size and chunk_count");
+        return NULL;
+    }
+    if (total_size > (long long)chunk_size * chunk_count) {
+        snprintf(err, err_len, "total_size exceeds chunk geometry");
+        return NULL;
+    }
 
     char path[1024];
     if (filemgr_resolve_path(path_raw, path, sizeof(path)) != 0 ||
@@ -445,7 +490,9 @@ static cJSON *op_upload_commit(const cJSON *args, const agent_config_t *config,
     }
 
     /* Verify all chunks were received: the part file must be at least
-     * total_size (files.go commit checks). */
+     * chunk_size*(chunk_count-1)+1 bytes (all but the final chunk present;
+     * files.go commit check). chunk_size <= FILEMGR_CHUNK_MAX and
+     * total_size <= chunk_size*chunk_count bound the product. */
     char part[1200];
     if (part_file_path(path, upload_id, part, sizeof(part)) != 0) {
         snprintf(err, err_len, "part path too long");
@@ -463,9 +510,14 @@ static cJSON *op_upload_commit(const cJSON *args, const agent_config_t *config,
                  (long long)pst.st_size, total_size);
         return NULL;
     }
+    if ((long long)pst.st_size < total_size) {
+        snprintf(err, err_len, "incomplete upload: %lld of %lld bytes",
+                 (long long)pst.st_size, total_size);
+        return NULL;
+    }
 
     /* Truncate to total_size when the last chunk padded the file. */
-    if (total_size > 0 && (long long)pst.st_size > total_size) {
+    if ((long long)pst.st_size > total_size) {
         if (truncate(part, (off_t)total_size) != 0) {
             snprintf(err, err_len, "truncate %s: %s", part, strerror(errno));
             return NULL;
@@ -509,6 +561,10 @@ static cJSON *op_upload_cancel(const cJSON *args, char *err, size_t err_len) {
     const char *upload_id = args_str(args, "upload_id");
     if (!upload_id) {
         snprintf(err, err_len, "invalid arguments");
+        return NULL;
+    }
+    if (!transfer_id_valid(upload_id)) {
+        snprintf(err, err_len, "invalid transfer identifier");
         return NULL;
     }
 
