@@ -100,68 +100,6 @@ int fallback_post_rpc(const agent_config_t *config, const char *request_body,
     return ret;
 }
 
-int fallback_build_report_request(long report_id, const char *report_body,
-                                  const int *ack_ids, int ack_count, char **out) {
-    if (!report_body || !out) return -1;
-    *out = NULL;
-
-    /* The report body is pre-escaped, complete JSON, so it is embedded
-     * verbatim under params.report (same trick as report_generate_v2). */
-    size_t cap = strlen(report_body) + 256 + (ack_count > 0 ? (size_t)ack_count * 12 : 0);
-    char *buf = malloc(cap);
-    if (!buf) return -1;
-
-    int offset = snprintf(buf, cap,
-                          "{\"jsonrpc\":\"2.0\",\"id\":\"report-%ld\","
-                          "\"method\":\"%s\",\"params\":{\"report\":",
-                          report_id, AGENT_REPORT);
-    if (offset < 0 || (size_t)offset >= cap) {
-        free(buf);
-        return -1;
-    }
-
-    size_t blen = strlen(report_body);
-    if (offset + (int)blen + 2 >= (int)cap) {
-        free(buf);
-        return -1;
-    }
-    memcpy(buf + offset, report_body, blen);
-    offset += (int)blen;
-    buf[offset++] = '}';
-    buf[offset++] = '}';
-
-    /* Append ack_event_ids after params.report, keeping params open. */
-    /* The closing braces above close params and envelope only when no ACKs
-     * follow; rebuild with ACKs using the two-pass approach below. */
-    if (ack_count > 0 && ack_ids) {
-        offset -= 2; /* rewind the two closing braces */
-        int n = snprintf(buf + offset, cap - (size_t)offset, ",\"ack_event_ids\":[");
-        if (n < 0 || offset + n >= (int)cap) {
-            free(buf);
-            return -1;
-        }
-        offset += n;
-        for (int i = 0; i < ack_count; i++) {
-            n = snprintf(buf + offset, cap - (size_t)offset, "%s%d",
-                         i > 0 ? "," : "", ack_ids[i]);
-            if (n < 0 || offset + n >= (int)cap) {
-                free(buf);
-                return -1;
-            }
-            offset += n;
-        }
-        n = snprintf(buf + offset, cap - (size_t)offset, "]}}");
-        if (n < 0 || offset + n >= (int)cap) {
-            free(buf);
-            return -1;
-        }
-        offset += n;
-    }
-    buf[offset] = '\0';
-    *out = buf;
-    return 0;
-}
-
 int fallback_build_pull_request(long pull_id, const int *ack_ids,
                                 int ack_count, char **out) {
     if (!out) return -1;

@@ -2,10 +2,11 @@
  * test_fallback.c - POST fallback channel unit tests
  *
  * Test scope:
- *   - fallback_build_report_request: envelope shape, report embedding,
- *     ack_event_ids array placement
  *   - fallback_build_pull_request: capabilities list and ACK array
  *   - fallback_extract_events: result.events extraction and error shapes
+ *
+ * The agent.report envelope is produced by report_generate_v2_with_acks_ex
+ * (covered by test_report.c); no duplicate builder exists in fallback.c.
  */
 
 #include "unity.h"
@@ -16,39 +17,6 @@
 
 void setUp(void) {}
 void tearDown(void) {}
-
-/* ====== fallback_build_report_request ====== */
-
-void test_fallback_report_request_no_acks(void) {
-    char *out = NULL;
-    TEST_ASSERT_EQUAL_INT(0, fallback_build_report_request(1700000000,
-                                                           "{\"cpu\":1}",
-                                                           NULL, 0, &out));
-    TEST_ASSERT_NOT_NULL(out);
-    TEST_ASSERT_NOT_NULL(strstr(out,
-        "{\"jsonrpc\":\"2.0\",\"id\":\"report-1700000000\",\"method\":\"agent.report\""));
-    TEST_ASSERT_NOT_NULL(strstr(out, "\"params\":{\"report\":{\"cpu\":1}}"));
-    TEST_ASSERT_NULL(strstr(out, "ack_event_ids"));
-    free(out);
-}
-
-void test_fallback_report_request_with_acks(void) {
-    int acks[] = {7, 9};
-    char *out = NULL;
-    TEST_ASSERT_EQUAL_INT(0, fallback_build_report_request(42,
-                                                           "{\"cpu\":2}", acks, 2, &out));
-    TEST_ASSERT_NOT_NULL(out);
-    TEST_ASSERT_NOT_NULL(strstr(out, "\"id\":\"report-42\""));
-    TEST_ASSERT_NOT_NULL(strstr(out, "\"report\":{\"cpu\":2},\"ack_event_ids\":[7,9]}}"));
-    free(out);
-}
-
-void test_fallback_report_request_null_args(void) {
-    char *out = NULL;
-    TEST_ASSERT_EQUAL_INT(-1, fallback_build_report_request(1, NULL, NULL, 0, &out));
-    TEST_ASSERT_EQUAL_INT(-1, fallback_build_report_request(1, "{}", NULL, 0, NULL));
-    TEST_ASSERT_NULL(out);
-}
 
 /* ====== fallback_build_pull_request ====== */
 
@@ -118,9 +86,6 @@ void test_fallback_extract_events_empty_or_error(void) {
 int main(void) {
     UNITY_BEGIN();
 
-    RUN_TEST(test_fallback_report_request_no_acks);
-    RUN_TEST(test_fallback_report_request_with_acks);
-    RUN_TEST(test_fallback_report_request_null_args);
     RUN_TEST(test_fallback_pull_request_shape);
     RUN_TEST(test_fallback_pull_request_with_acks);
     RUN_TEST(test_fallback_extract_events_ok);

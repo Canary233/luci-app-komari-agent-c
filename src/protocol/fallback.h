@@ -42,23 +42,12 @@ int fallback_post_rpc(const agent_config_t *config, const char *request_body,
                       bool gzip, int timeout_sec, cJSON **response_out);
 
 /**
- * Build an agent.report JSON-RPC request carrying the report body and the
- * pending ACK event IDs, mirroring v2.BuildReportRequest.
- *
- * @param report_id   Request id string ("report-<unix>" in the Go reference)
- * @param report_body Report JSON object body (params.report payload string,
- *                    NUL-terminated; embedded verbatim)
- * @param ack_ids     Pending ACK IDs; may be NULL when ack_count is 0
- * @param ack_count   Number of ACK IDs
- * @param out         Outputs a heap-allocated JSON string; caller frees
- * @return 0 on success, -1 on failure
- */
-int fallback_build_report_request(long report_id, const char *report_body,
-                                  const int *ack_ids, int ack_count, char **out);
-
-/**
  * Build an agent.pull JSON-RPC request, mirroring the Go reference:
  * params = { capabilities: [...], ack_event_ids: [...] }.
+ *
+ * Report envelopes are produced directly by
+ * report_generate_v2_with_acks_ex (see report.h); no builder exists here
+ * to avoid two implementations of the same wire format.
  *
  * @param pull_id    Request id string ("pull-<unix>" in the Go reference)
  * @param ack_ids    Pending ACK IDs; may be NULL when ack_count is 0
