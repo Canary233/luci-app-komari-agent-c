@@ -1151,6 +1151,17 @@ static void run_post_fallback(void) {
                  * request, mirroring the Go snapshot/clear order). */
                 v2_clear_acks(ws_client_get_v2_state(g_ws_client));
                 fallback_process_response_events(resp);
+            } else {
+                /* Pull failure: back off for reconnect_interval seconds
+                 * (in 1-second slices so shutdown stays responsive),
+                 * mirroring the Go runV2PullLoop retry timer. Without this
+                 * the loop hammers a down panel at full speed. */
+                free(pull_req);
+                cJSON_Delete(resp);
+                for (int i = 0; g_running && i < g_config.reconnect_interval; i++) {
+                    sleep(1);
+                }
+                break; /* re-evaluate the pull deadline in the outer loop */
             }
             cJSON_Delete(resp);
             free(pull_req);
