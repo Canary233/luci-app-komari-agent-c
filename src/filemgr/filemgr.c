@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <semaphore.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -36,24 +37,27 @@
 /* ------------------------------------------------------------------ */
 
 static sem_t g_op_sem;
-static bool g_op_sem_ready = false;
+static pthread_once_t g_op_sem_once = PTHREAD_ONCE_INIT;
+
+/* One-time initializer: handle_file_params is invoked from both the WS
+ * recv thread and the fallback thread, so a lazy check-then-init on a
+ * plain bool could double-initialize the semaphore. */
+static void filemgr_sem_init_once(void) {
+    sem_init(&g_op_sem, 0, FILEMGR_MAX_CONCURRENT);
+}
 
 static void filemgr_sem_ensure(void) {
-    if (!g_op_sem_ready) {
-        if (sem_init(&g_op_sem, 0, FILEMGR_MAX_CONCURRENT) == 0) {
-            g_op_sem_ready = true;
-        }
-    }
+    pthread_once(&g_op_sem_once, filemgr_sem_init_once);
 }
 
 int filemgr_try_acquire(void) {
     filemgr_sem_ensure();
-    if (!g_op_sem_ready) return -1;
     return (sem_trywait(&g_op_sem) == 0) ? 0 : -1;
 }
 
 void filemgr_release(void) {
-    if (g_op_sem_ready) sem_post(&g_op_sem);
+    filemgr_sem_ensure();
+    sem_post(&g_op_sem);
 }
 
 bool filemgr_allowed(const agent_config_t *config) {
@@ -95,9 +99,14 @@ int filemgr_resolve_path(const char *raw, char *out, size_t out_len) {
             if (nparts > 0) nparts--;
             continue;
         }
-        if (nparts < (int)(sizeof(parts) / sizeof(parts[0]))) {
-            parts[nparts++] = tok;
+        /* Overlong paths must be rejected, not silently truncated: a
+         * truncated path resolves to a different file, which is dangerous
+         * for destructive ops like delete. */
+        if (nparts >= (int)(sizeof(parts) / sizeof(parts[0]))) {
+            errno = ENAMETOOLONG;
+            return -1;
         }
+        parts[nparts++] = tok;
     }
 
     size_t off = 0;
@@ -262,9 +271,19 @@ static cJSON *op_list(const cJSON *args, char *err, size_t err_len) {
         return NULL;
     }
 
+    /* Per-invocation heap buffers (up to ~1.25 MiB total): op_list runs on
+     * up to FILEMGR_MAX_CONCURRENT concurrent workers, so static buffers
+     * here would race and interleave entries across responses. */
     enum { MAX_ENTRIES = 4096 };
-    static char names[MAX_ENTRIES][256];
-    static bool is_dirs[MAX_ENTRIES];
+    char (*names)[256] = malloc(sizeof(*names) * MAX_ENTRIES);
+    bool *is_dirs = malloc(sizeof(bool) * MAX_ENTRIES);
+    if (!names || !is_dirs) {
+        free(names);
+        free(is_dirs);
+        closedir(dir);
+        snprintf(err, err_len, "out of memory");
+        return NULL;
+    }
     int n = 0;
     struct dirent *de;
     while ((de = readdir(dir)) != NULL && n < MAX_ENTRIES) {
@@ -302,6 +321,8 @@ static cJSON *op_list(const cJSON *args, char *err, size_t err_len) {
         cJSON *fi = fileinfo_build(names[i], full);
         if (fi) cJSON_AddItemToArray(arr, fi);
     }
+    free(names);
+    free(is_dirs);
     return arr;
 }
 
@@ -341,18 +362,56 @@ static cJSON *op_create(const cJSON *args, char *err, size_t err_len) {
         return NULL;
     }
 
+    /* MkdirAll semantics on the parent (Go createFile). */
+    char parent[1024];
+    snprintf(parent, sizeof(parent), "%s", path);
+    char *pslash = strrchr(parent, '/');
+    if (pslash && pslash != parent) {
+        *pslash = '\0';
+        for (char *p = parent + 1; *p; p++) {
+            if (*p == '/') {
+                *p = '\0';
+                if (mkdir(parent, 0755) != 0 && errno != EEXIST) {
+                    snprintf(err, err_len, "mkdir %s: %s", parent, strerror(errno));
+                    return NULL;
+                }
+                *p = '/';
+            }
+        }
+        if (mkdir(parent, 0755) != 0 && errno != EEXIST) {
+            snprintf(err, err_len, "mkdir %s: %s", parent, strerror(errno));
+            return NULL;
+        }
+    }
+
+    /* Reject replacing a directory with a file (Go createFile). */
+    struct stat pst;
+    if (lstat(path, &pst) == 0 && S_ISDIR(pst.st_mode)) {
+        snprintf(err, err_len, "cannot replace a directory with a file");
+        return NULL;
+    }
+
+    /* Exclusive randomly-suffixed temp file (Go os.CreateTemp): a fixed
+     * pid-based name would collide between concurrent create ops on the
+     * same path. */
     char tmp[1024];
-    snprintf(tmp, sizeof(tmp), "%s.komari-empty-%d", path, (int)getpid());
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    unsigned seq = (unsigned)((uintptr_t)pthread_self() ^ (uintptr_t)time(NULL));
+    snprintf(tmp, sizeof(tmp), "%s.komari-empty-%d-%u", path, (int)getpid(), seq & 0xFFFF);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    for (int retry = 0; fd < 0 && errno == EEXIST && retry < 8; retry++) {
+        seq = seq * 1103515245u + 12345u;
+        snprintf(tmp, sizeof(tmp), "%s.komari-empty-%d-%u",
+                 path, (int)getpid(), seq & 0xFFFF);
+        fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    }
     if (fd < 0) {
         snprintf(err, err_len, "create %s: %s", path, strerror(errno));
         return NULL;
     }
     close(fd);
 
-    struct stat st;
-    if (stat(path, &st) == 0) {
-        chmod(tmp, st.st_mode & 07777);
+    if (lstat(path, &pst) == 0) {
+        chmod(tmp, pst.st_mode & 07777);
     }
     if (rename(tmp, path) != 0) {
         unlink(tmp);
@@ -503,6 +562,17 @@ static int copy_entry(const char *src, const char *dst, int depth) {
     return 0;
 }
 
+/* True when dst lies strictly inside src (src itself, src/... subtree).
+ * Mirrors the Go pathContains (files.go): a prefix match only counts as
+ * containment when the next character is a separator, so /a/b -> /a/b2
+ * (a sibling) is allowed while /a/b -> /a/b/c (a child) is rejected. */
+static bool path_contains(const char *src, const char *dst) {
+    size_t n = strlen(src);
+    if (strncmp(dst, src, n) != 0) return false;
+    if (dst[n] == '\0') return true; /* identical path */
+    return dst[n] == '/';
+}
+
 static cJSON *op_copy(const cJSON *args, char *err, size_t err_len) {
     cJSON *s_item = cJSON_GetObjectItem(args, "source");
     cJSON *d_item = cJSON_GetObjectItem(args, "destination");
@@ -514,7 +584,7 @@ static cJSON *op_copy(const cJSON *args, char *err, size_t err_len) {
         snprintf(err, err_len, "invalid path");
         return NULL;
     }
-    if (strcmp(src, dst) == 0 || (strstr(dst, src) == dst && strcmp(src, "/") != 0)) {
+    if (path_contains(src, dst)) {
         snprintf(err, err_len, "cannot copy into itself");
         return NULL;
     }
@@ -538,7 +608,7 @@ static cJSON *op_move(const cJSON *args, char *err, size_t err_len) {
         snprintf(err, err_len, "invalid path");
         return NULL;
     }
-    if (strcmp(src, dst) == 0 || (strstr(dst, src) == dst && strcmp(src, "/") != 0)) {
+    if (path_contains(src, dst)) {
         snprintf(err, err_len, "cannot move into itself");
         return NULL;
     }
@@ -760,7 +830,14 @@ cJSON *filemgr_execute(const agent_config_t *config, const cJSON *params) {
     cJSON *req_id = cJSON_GetObjectItem(params, "request_id");
     cJSON *op_item = cJSON_GetObjectItem(params, "op");
     cJSON *args = cJSON_GetObjectItem(params, "args");
-    if (!cJSON_IsObject(args)) args = cJSON_CreateObject();
+    /* Synthesize an empty args object when absent/not an object; track
+     * ownership so the worker's result-driven flow cannot leak it. */
+    cJSON *args_owned = NULL;
+    if (!cJSON_IsObject(args)) {
+        args_owned = cJSON_CreateObject();
+        if (!args_owned) return NULL;
+        args = args_owned;
+    }
 
     const char *op = (op_item && cJSON_IsString(op_item) && op_item->valuestring)
                          ? op_item->valuestring : "";
@@ -802,6 +879,10 @@ cJSON *filemgr_execute(const agent_config_t *config, const cJSON *params) {
     }
 
     if (!result) ok = false;
+
+    cJSON_Delete(args_owned);
+    args_owned = NULL;
+    args = NULL;
 
     cJSON *out = cJSON_CreateObject();
     if (!out) {
