@@ -328,6 +328,45 @@ static const char *http_strcasestr(const char *haystack, const char *needle) {
     return NULL;
 }
 
+/* Resolve a Location header value against the request URL for redirect
+ * following. Handles absolute URLs, scheme-relative ("//host/path") and
+ * root/relative paths. Returns 0 and fills out on success. */
+static int http_resolve_location(const char *base_url, const char *location,
+                                 char *out, size_t out_len) {
+    if (!base_url || !location || !location[0] || !out || out_len == 0) return -1;
+
+    if (strstr(location, "://")) { /* absolute URL */
+        if (strlen(location) >= out_len) return -1;
+        strcpy(out, location);
+        return 0;
+    }
+
+    const char *scheme_end = strstr(base_url, "://");
+    if (!scheme_end) return -1;
+    size_t scheme_len = (size_t)(scheme_end - base_url) + 3; /* includes "://" */
+    const char *authority_start = base_url + scheme_len;
+    const char *path_start = strchr(authority_start, '/');
+
+    if (location[0] == '/' && location[1] == '/') { /* scheme-relative */
+        int n = snprintf(out, out_len, "%.*s%s",
+                         (int)scheme_len, base_url, location);
+        return (n < 0 || (size_t)n >= out_len) ? -1 : 0;
+    }
+    if (location[0] == '/' || !path_start) { /* root-absolute (or no base path) */
+        int n = snprintf(out, out_len, "%.*s%s",
+                         (int)(path_start ? path_start - base_url
+                                          : (long)strlen(base_url)),
+                         base_url, location);
+        return (n < 0 || (size_t)n >= out_len) ? -1 : 0;
+    }
+
+    /* Relative path: replace the last path segment of the base. */
+    const char *last_seg = strrchr(path_start, '/');
+    int n = snprintf(out, out_len, "%.*s%s",
+                     (int)(last_seg - base_url + 1), base_url, location);
+    return (n < 0 || (size_t)n >= out_len) ? -1 : 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Growable byte buffer (used for header block and buffered bodies)     */
 /* ------------------------------------------------------------------ */
@@ -390,63 +429,63 @@ static int http_send_body(SSL *ssl, int fd,
 }
 
 /* ------------------------------------------------------------------ */
-/* Main request routine                                                */
+/* Connection establishment                                            */
 /* ------------------------------------------------------------------ */
 
-int http_client_request(const http_client_request_t *req,
-                        http_client_response_t *resp) {
-    if (!req || !req->url || !resp) return -1;
-    memset(resp, 0, sizeof(*resp));
+/* Resolve url->host and connect the first reachable address. Addresses of
+ * the preferred IP family (req->prefer_ip "4"/"6") are dialed first while
+ * the other family stays as fallback, mirroring the Go reference
+ * (dnsresolver.GetDialContextWithPreference).
+ *
+ * On success returns the connected fd and stores the resolved list in
+ * *res_out; the caller MUST release it with freeaddrinfo(*res_out) — the
+ * node returned by getaddrinfo remains the list head even though the dial
+ * order may differ, so freeing the head frees the whole chain.
+ * Returns -1 when resolution or every connection attempt fails (no
+ * allocation for the caller to release in that case; *res_out is NULL). */
+static int http_connect(const http_client_request_t *req, const http_url_t *url,
+                        int timeout, struct addrinfo **res_out) {
+    *res_out = NULL;
 
-    http_url_t url;
-    if (http_url_parse(req->url, &url) != 0) {
-        KOMARI_LOG_ERROR("http: invalid URL %s", req->url);
-        return -1;
-    }
-
-    int timeout = req->timeout_sec > 0 ? req->timeout_sec
-                                       : HTTP_CLIENT_DEFAULT_TIMEOUT_SEC;
-
-    /* --- Resolve and connect (non-blocking connect with deadline) --- */
     char port_str[16];
-    snprintf(port_str, sizeof(port_str), "%d", url.port);
+    snprintf(port_str, sizeof(port_str), "%d", url->port);
 
     struct addrinfo hints, *res = NULL, *rp;
-    int fd = -1;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(url.host, port_str, &hints, &res) != 0 || !res) {
-        KOMARI_LOG_ERROR("http: DNS resolution failed host=%s", url.host);
+    if (getaddrinfo(url->host, port_str, &hints, &res) != 0 || !res) {
+        KOMARI_LOG_ERROR("http: DNS resolution failed host=%s", url->host);
         return -1;
     }
+    *res_out = res;
 
-    /* Reorder the address list per the preferred IP version. The Go
-     * reference (dnsresolver.GetDialContextWithPreference) sorts resolved
-     * addresses so the preferred family is dialed first while still
-     * falling back to the other family. */
+    /* Dial-order preference: walk the list once and remember the first
+     * address of the preferred family, then try preferred-family addresses
+     * before the rest. The chain itself is never relinked, so the original
+     * head stays the single freeaddrinfo() root (an earlier in-place reorder
+     * orphaned nodes ahead of res). */
+    struct addrinfo *pref_first = NULL;
     if (req->prefer_ip && (req->prefer_ip[0] == '4' || req->prefer_ip[0] == '6')) {
         int want_v4 = (req->prefer_ip[0] == '4');
-        struct addrinfo *head = NULL, *tail = NULL;
-        struct addrinfo *other_head = NULL, *other_tail = NULL;
         for (rp = res; rp; rp = rp->ai_next) {
-            int is_v4 = (rp->ai_family == AF_INET);
-            if (is_v4 == want_v4) {
-                if (tail) tail->ai_next = rp; else head = rp;
-                tail = rp;
-            } else {
-                if (other_tail) other_tail->ai_next = rp; else other_head = rp;
-                other_tail = rp;
+            if ((rp->ai_family == AF_INET) == want_v4) {
+                pref_first = rp;
+                break;
             }
         }
-        if (tail) tail->ai_next = other_head; else head = other_head;
-        if (other_tail) other_tail->ai_next = NULL;
-        rp = head;
-        /* Walk the reordered list in place (res is left untouched; the
-         * reordered chain covers the same nodes). */
-        struct addrinfo *ordered = head;
-        for (; ordered; ordered = ordered->ai_next) {
-            fd = socket(ordered->ai_family, ordered->ai_socktype, ordered->ai_protocol);
+    }
+
+    for (int pass = pref_first ? 0 : 1; pass < 2; pass++) {
+        for (rp = (pass == 0) ? pref_first : res; rp; rp = rp->ai_next) {
+            if (pass == 0 && (rp->ai_family == AF_INET) != (pref_first->ai_family == AF_INET)) {
+                continue; /* First pass: preferred family only. */
+            }
+            if (pass == 1 && pref_first && rp == pref_first) {
+                continue; /* Second pass: skip what pass 0 already dialed. */
+            }
+
+            int fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
             if (fd < 0) continue;
 
             struct timeval tv = {.tv_sec = timeout, .tv_usec = 0};
@@ -456,9 +495,9 @@ int http_client_request(const http_client_request_t *req,
             int flags = fcntl(fd, F_GETFL, 0);
             if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
-            if (connect(fd, ordered->ai_addr, ordered->ai_addrlen) == 0) {
+            if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
                 if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-                break;
+                return fd;
             }
             if (errno == EINPROGRESS) {
                 int connected = 0;
@@ -477,333 +516,439 @@ int http_client_request(const http_client_request_t *req,
                     break;
                 }
                 if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-                if (connected) break;
+                if (connected) return fd;
             }
             close(fd);
-            fd = -1;
-        }
-        freeaddrinfo(res);
-        goto have_fd;
-    }
-
-    fd = -1;
-    for (rp = res; rp; rp = rp->ai_next) {
-        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (fd < 0) continue;
-
-        struct timeval tv = {.tv_sec = timeout, .tv_usec = 0};
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-        int flags = fcntl(fd, F_GETFL, 0);
-        if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-
-        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-            break;
-        }
-        if (errno == EINPROGRESS) {
-            int connected = 0;
-            time_t deadline = time(NULL) + timeout;
-            for (;;) {
-                time_t now = time(NULL);
-                if (now >= deadline) break;
-                struct pollfd pfd = {.fd = fd, .events = POLLOUT};
-                int pr = poll(&pfd, 1, (int)((deadline - now) * 1000));
-                if (pr < 0 && errno == EINTR) continue;
-                if (pr <= 0) break;
-                int so_error = 0;
-                socklen_t so_len = sizeof(so_error);
-                getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &so_len);
-                if (so_error == 0) connected = 1;
-                break;
-            }
-            if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-            if (connected) break;
-        }
-        close(fd);
-        fd = -1;
-    }
-    freeaddrinfo(res);
-
-have_fd:
-    if (fd < 0) {
-        KOMARI_LOG_ERROR("http: connection failed host=%s port=%d",
-                         url.host, url.port);
-        return -1;
-    }
-
-    /* --- TLS handshake --- */
-    SSL *ssl = NULL;
-    SSL_CTX *ssl_ctx = NULL;
-    if (url.is_tls) {
-        ssl_ctx = SSL_CTX_new(TLS_client_method());
-        if (!ssl_ctx) {
-            close(fd);
-            KOMARI_LOG_ERROR("http: SSL_CTX allocation failed");
-            return -1;
-        }
-        if (req->ignore_cert) {
-            SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL);
-        } else {
-            SSL_CTX_set_default_verify_paths(ssl_ctx);
-            SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);
-        }
-        ssl = SSL_new(ssl_ctx);
-        if (!ssl) {
-            SSL_CTX_free(ssl_ctx);
-            close(fd);
-            KOMARI_LOG_ERROR("http: SSL allocation failed");
-            return -1;
-        }
-        SSL_set_fd(ssl, fd);
-        SSL_set_tlsext_host_name(ssl, url.host);
-#if OPENSSL_VERSION_NUMBER >= 0x10002000L
-        if (!req->ignore_cert) {
-            SSL_set1_host(ssl, url.host);
-        }
-#endif
-        if (SSL_connect(ssl) <= 0) {
-            SSL_free(ssl);
-            SSL_CTX_free(ssl_ctx);
-            close(fd);
-            KOMARI_LOG_ERROR("http: TLS handshake failed host=%s", url.host);
-            return -1;
         }
     }
+    return -1;
+}
 
-    int ret = -1;
+/* ------------------------------------------------------------------ */
+/* Main request routine                                                */
+/* ------------------------------------------------------------------ */
+
+int http_client_request(const http_client_request_t *req_in,
+                        http_client_response_t *resp) {
+    if (!req_in || !req_in->url || !resp) return -1;
+    memset(resp, 0, sizeof(*resp));
+
+    /* Working copy of the request: redirects rewrite the URL. The current
+     * URL must live in mutable storage across hops. */
+    http_client_request_t req = *req_in;
+    char cur_url[2048];
+    snprintf(cur_url, sizeof(cur_url), "%s", req.url);
+    req.url = cur_url;
+
+    int timeout = req.timeout_sec > 0 ? req.timeout_sec
+                                       : HTTP_CLIENT_DEFAULT_TIMEOUT_SEC;
+
+    /* Redirect loop: 301/302/303/307/308 responses with a Location header
+     * are followed (up to 5 hops). GitHub release assets are served behind
+     * a 302 to the CDN, so self-update downloads never succeed without
+     * this. 303 and 301/302 switch the method to GET per RFC 9110; 307/308
+     * keep it. Cross-origin hops drop authentication and cookie headers. */
+    char *acc = NULL;
+    size_t acc_len = 0;
+    int status = 0;
+    int gzipped_final = 0;
+
+    char *method_buf = NULL;
+    const char *method = req.method ? req.method : "POST";
     char *send_buf = NULL;
     char *gz_body = NULL;
     size_t gz_len = 0;
-    http_buf_t hdr = {0};
     http_stream_t stream;
-    char *acc = NULL;          /* Buffered-mode accumulator. */
-    size_t acc_len = 0, acc_cap = 0;
+    SSL *ssl = NULL;
+    SSL_CTX *ssl_ctx = NULL;
+    int fd = -1;
+    struct addrinfo *res = NULL;
+    int ret = -1;
+    /* Per-hop allocations that must be reachable from the shared out: label. */
+    http_buf_t hdr = {0};
+    char *acc_hop = NULL;
 
-    /* --- Normalize the body and compress it when requested. --- */
-    const char *body_data = req->body;
-    size_t body_len = req->body_len;
-    if (req->body && !req->body_reader && body_len == 0) {
-        body_len = strlen(req->body);
-    }
-    if (req->gzip_body && req->body) {
-        if (http_gzip_body(req->body, body_len, &gz_body, &gz_len) != 0) {
-            KOMARI_LOG_ERROR("http: gzip compression failed");
+    for (int hop = 0; hop <= 5; hop++) {
+        if (hop > 0) {
+            /* Re-establish transport state for the next hop. */
+            free(send_buf);
+            send_buf = NULL;
+            free(gz_body);
+            gz_body = NULL;
+            gz_len = 0;
+            if (ssl) {
+                SSL_shutdown(ssl);
+                SSL_free(ssl);
+                ssl = NULL;
+            }
+            if (ssl_ctx) {
+                SSL_CTX_free(ssl_ctx);
+                ssl_ctx = NULL;
+            }
+            if (fd >= 0) {
+                close(fd);
+                fd = -1;
+            }
+            if (res) {
+                freeaddrinfo(res);
+                res = NULL;
+            }
+        }
+
+        http_url_t url;
+        if (http_url_parse(req.url, &url) != 0) {
+            KOMARI_LOG_ERROR("http: invalid URL %s", req.url);
             goto out;
         }
-        body_data = gz_body;
-        body_len = gz_len;
-    }
-    /* Content-Length: for streaming providers this is the caller-declared
-     * total (req->body_len); otherwise it is the actual body size. */
-    size_t declared = req->body_reader ? req->body_len : body_len;
 
-    /* Host header value: bracket IPv6 literals, omit default ports. */
-    int default_port = (url.is_tls && url.port == 443) ||
-                       (!url.is_tls && url.port == 80);
-    char host_header[300];
-    if (default_port) {
-        if (strchr(url.host, ':')) {
-            snprintf(host_header, sizeof(host_header), "[%s]", url.host);
+        /* --- Resolve and connect (non-blocking connect with deadline) --- */
+        fd = http_connect(&req, &url, timeout, &res);
+        if (fd < 0) {
+            KOMARI_LOG_ERROR("http: connection failed host=%s port=%d",
+                             url.host, url.port);
+            goto out;
+        }
+
+        /* --- TLS handshake --- */
+        if (url.is_tls) {
+            ssl_ctx = SSL_CTX_new(TLS_client_method());
+            if (!ssl_ctx) {
+                KOMARI_LOG_ERROR("http: SSL_CTX allocation failed");
+                goto out;
+            }
+            if (req.ignore_cert) {
+                SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL);
+            } else {
+                SSL_CTX_set_default_verify_paths(ssl_ctx);
+                SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);
+            }
+            ssl = SSL_new(ssl_ctx);
+            if (!ssl) {
+                KOMARI_LOG_ERROR("http: SSL allocation failed");
+                goto out;
+            }
+            SSL_set_fd(ssl, fd);
+            SSL_set_tlsext_host_name(ssl, url.host);
+#if OPENSSL_VERSION_NUMBER >= 0x10002000L
+            if (!req.ignore_cert) {
+                SSL_set1_host(ssl, url.host);
+            }
+#endif
+            if (SSL_connect(ssl) <= 0) {
+                KOMARI_LOG_ERROR("http: TLS handshake failed host=%s", url.host);
+                goto out;
+            }
+        }
+
+        size_t acc_len_hop = 0, acc_cap_hop = 0;
+
+        /* --- Normalize the body and compress it when requested. --- */
+        const char *body_data = req.body;
+        size_t body_len = req.body_len;
+        if (req.body && !req.body_reader && body_len == 0) {
+            body_len = strlen(req.body);
+        }
+        if (req.gzip_body && req.body) {
+            if (http_gzip_body(req.body, body_len, &gz_body, &gz_len) != 0) {
+                KOMARI_LOG_ERROR("http: gzip compression failed");
+                goto out;
+            }
+            body_data = gz_body;
+            body_len = gz_len;
+        }
+        /* Content-Length: for streaming providers this is the caller-declared
+         * total (req.body_len); otherwise it is the actual body size. */
+        size_t declared = req.body_reader ? req.body_len : body_len;
+
+        /* Host header value: bracket IPv6 literals, omit default ports. */
+        int default_port = (url.is_tls && url.port == 443) ||
+                           (!url.is_tls && url.port == 80);
+        char host_header[300];
+        if (default_port) {
+            if (strchr(url.host, ':')) {
+                snprintf(host_header, sizeof(host_header), "[%s]", url.host);
+            } else {
+                snprintf(host_header, sizeof(host_header), "%s", url.host);
+            }
         } else {
-            snprintf(host_header, sizeof(host_header), "%s", url.host);
+            if (strchr(url.host, ':')) {
+                snprintf(host_header, sizeof(host_header), "[%s]:%d", url.host, url.port);
+            } else {
+                snprintf(host_header, sizeof(host_header), "%s:%d", url.host, url.port);
+            }
         }
-    } else {
-        if (strchr(url.host, ':')) {
-            snprintf(host_header, sizeof(host_header), "[%s]:%d", url.host, url.port);
-        } else {
-            snprintf(host_header, sizeof(host_header), "%s:%d", url.host, url.port);
-        }
-    }
 
-    /* --- Build and send the request head. --- */
-    const char *method = req->method ? req->method : "POST";
-    const char *content_type = req->content_type ? req->content_type
-                                                 : "application/json";
-
-    send_buf = malloc(HTTP_HEADER_MAX);
-    if (!send_buf) goto out;
-    int head = snprintf(send_buf, HTTP_HEADER_MAX,
-        "%s %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "User-Agent: komari-agent-c\r\n"
-        "Content-Type: %s\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n",
-        method, url.path, host_header,
-        content_type, declared);
-    if (head < 0 || head >= HTTP_HEADER_MAX) {
-        KOMARI_LOG_ERROR("http: request head too long");
-        goto out;
-    }
-    if (req->gzip_body && req->body) {
-        int n = snprintf(send_buf + head, HTTP_HEADER_MAX - head,
-                         "Content-Encoding: gzip\r\n");
-        if (n < 0 || head + n >= HTTP_HEADER_MAX) goto out;
-        head += n;
-    }
-    if (req->extra_headers && req->extra_headers[0]) {
-        int n = snprintf(send_buf + head, HTTP_HEADER_MAX - head, "%s",
-                         req->extra_headers);
-        if (n < 0 || head + n >= HTTP_HEADER_MAX) goto out;
-        head += n;
-    }
-    if (head + 2 >= HTTP_HEADER_MAX) goto out;
-    send_buf[head++] = '\r';
-    send_buf[head++] = '\n';
-
-    if (http_send_full(ssl, fd, send_buf, (size_t)head) != 0 ||
-        http_send_body(ssl, fd, req, body_data, body_len) != 0) {
-        KOMARI_LOG_ERROR("http: failed to send request to %s", url.host);
-        goto out;
-    }
-
-    /* --- Read the response header block. --- */
-    http_stream_init(&stream, ssl, fd);
-    size_t scan_from = 0;
-    for (;;) {
-        ssize_t n = http_stream_fill(&stream);
-        if (n <= 0) {
-            KOMARI_LOG_ERROR("http: no/short response from %s", url.host);
+        /* --- Build and send the request head. --- */
+        const char *content_type = req.content_type ? req.content_type
+                                                    : "application/json";
+        send_buf = malloc(HTTP_HEADER_MAX);
+        if (!send_buf) goto out;
+        int head = snprintf(send_buf, HTTP_HEADER_MAX,
+            "%s %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "User-Agent: komari-agent-c\r\n"
+            "Content-Type: %s\r\n"
+            "Content-Length: %zu\r\n"
+            "Connection: close\r\n",
+            method, url.path, host_header,
+            content_type, declared);
+        if (head < 0 || head >= HTTP_HEADER_MAX) {
+            KOMARI_LOG_ERROR("http: request head too long");
             goto out;
         }
-        if (http_buf_append(&hdr, stream.raw + stream.raw_pos, (size_t)n) != 0) {
+        if (req.gzip_body && req.body) {
+            int n = snprintf(send_buf + head, HTTP_HEADER_MAX - head,
+                             "Content-Encoding: gzip\r\n");
+            if (n < 0 || head + n >= HTTP_HEADER_MAX) goto out;
+            head += n;
+        }
+        if (req.extra_headers && req.extra_headers[0]) {
+            int n = snprintf(send_buf + head, HTTP_HEADER_MAX - head, "%s",
+                             req.extra_headers);
+            if (n < 0 || head + n >= HTTP_HEADER_MAX) goto out;
+            head += n;
+        }
+        if (head + 2 >= HTTP_HEADER_MAX) goto out;
+        send_buf[head++] = '\r';
+        send_buf[head++] = '\n';
+
+        if (http_send_full(ssl, fd, send_buf, (size_t)head) != 0 ||
+            http_send_body(ssl, fd, &req, body_data, body_len) != 0) {
+            KOMARI_LOG_ERROR("http: failed to send request to %s", url.host);
             goto out;
         }
-        stream.raw_pos += (size_t)n;
-        if (hdr.len >= HTTP_HEADER_RESPONSE_MAX) {
-            KOMARI_LOG_ERROR("http: response header block too large");
-            goto out;
-        }
-        /* Scan for the empty line terminating the header block. */
-        if (hdr.len >= 4) {
-            size_t from = scan_from;
-            if (from + 3 > hdr.len) from = hdr.len >= 4 ? hdr.len - 4 : 0;
-            const char *sep = NULL;
-            for (size_t i = from; i + 4 <= hdr.len; i++) {
-                if (hdr.data[i] == '\r' && hdr.data[i + 1] == '\n' &&
-                    hdr.data[i + 2] == '\r' && hdr.data[i + 3] == '\n') {
-                    sep = hdr.data + i;
+
+        /* --- Read the response header block. --- */
+        http_stream_init(&stream, ssl, fd);
+        size_t scan_from = 0;
+        for (;;) {
+            ssize_t n = http_stream_fill(&stream);
+            if (n <= 0) {
+                KOMARI_LOG_ERROR("http: no/short response from %s", url.host);
+                goto out;
+            }
+            if (http_buf_append(&hdr, stream.raw + stream.raw_pos, (size_t)n) != 0) {
+                goto out;
+            }
+            stream.raw_pos += (size_t)n;
+            if (hdr.len >= HTTP_HEADER_RESPONSE_MAX) {
+                KOMARI_LOG_ERROR("http: response header block too large");
+                goto out;
+            }
+            /* Scan for the empty line terminating the header block. */
+            if (hdr.len >= 4) {
+                size_t from = scan_from;
+                if (from + 3 > hdr.len) from = hdr.len >= 4 ? hdr.len - 4 : 0;
+                const char *sep = NULL;
+                for (size_t i = from; i + 4 <= hdr.len; i++) {
+                    if (hdr.data[i] == '\r' && hdr.data[i + 1] == '\n' &&
+                        hdr.data[i + 2] == '\r' && hdr.data[i + 3] == '\n') {
+                        sep = hdr.data + i;
+                        break;
+                    }
+                }
+                if (sep) {
+                    size_t leftover = hdr.len - (size_t)(sep - hdr.data) - 4;
+                    if (leftover > 0) {
+                        memcpy(stream.raw, sep + 4, leftover);
+                        stream.raw_len = leftover;
+                        stream.raw_pos = 0;
+                    } else {
+                        stream.raw_len = 0;
+                        stream.raw_pos = 0;
+                    }
+                    hdr.len = (size_t)(sep - hdr.data);
+                    hdr.data[hdr.len] = '\0';
                     break;
                 }
+                scan_from = hdr.len >= 3 ? hdr.len - 3 : 0;
             }
-            if (sep) {
-                size_t leftover = hdr.len - (size_t)(sep - hdr.data) - 4;
-                if (leftover > 0) {
-                    memcpy(stream.raw, sep + 4, leftover);
-                    stream.raw_len = leftover;
-                    stream.raw_pos = 0;
-                } else {
-                    stream.raw_len = 0;
-                    stream.raw_pos = 0;
+        }
+
+        /* --- Parse status line and framing headers. --- */
+        if (strncmp(hdr.data, "HTTP/1.", 7) != 0 || hdr.len < 12) {
+            KOMARI_LOG_ERROR("http: malformed status line");
+            goto out;
+        }
+        status = atoi(hdr.data + 9);
+        if (status < 100 || status > 599) {
+            KOMARI_LOG_ERROR("http: invalid status code");
+            goto out;
+        }
+        resp->status = status;
+
+        int chunked = 0, gzipped = 0;
+        long content_length = -1;
+        int has_location = 0;
+        char location_buf[2048];
+        char *save = NULL;
+        /* Walk header lines; the first line is the status line. */
+        for (char *line = strtok_r(hdr.data, "\r\n", &save); line;
+             line = strtok_r(NULL, "\r\n", &save)) {
+            if (line == hdr.data) continue;
+            if (http_header_name_is(line, "Transfer-Encoding")) {
+                if (http_strcasestr(http_header_value(line), "chunked")) chunked = 1;
+            } else if (http_header_name_is(line, "Content-Length")) {
+                content_length = strtol(http_header_value(line), NULL, 10);
+                if (content_length < 0) content_length = -1;
+            } else if (http_header_name_is(line, "Content-Encoding")) {
+                if (http_strcasestr(http_header_value(line), "gzip")) gzipped = 1;
+            } else if (http_header_name_is(line, "Location")) {
+                snprintf(location_buf, sizeof(location_buf), "%s",
+                         http_header_value(line));
+                has_location = 1;
+            }
+        }
+        (void)gzipped; /* Only consumed in buffered mode below. */
+
+        stream.chunked = chunked;
+        if (!chunked && content_length >= 0) stream.content_remaining = content_length;
+
+        /* --- Redirect handling (301/302/303/307/308 with Location). --- */
+        if (status == 301 || status == 302 || status == 303 ||
+            status == 307 || status == 308) {
+            if (!has_location || !location_buf[0]) {
+                KOMARI_LOG_WARN("http: %d without Location from %s",
+                                status, url.host);
+                goto out; /* treat as a transport-level failure */
+            }
+            if (hop == 5) {
+                KOMARI_LOG_ERROR("http: too many redirects (last %d from %s)",
+                                 status, url.host);
+                goto out;
+            }
+            /* Streaming request bodies cannot be replayed mid-stream on a
+             * 307/308 (the reader has already consumed part of the body). */
+            if ((status == 307 || status == 308) && req.body_reader) {
+                KOMARI_LOG_ERROR("http: %d on a streaming request, not following",
+                                 status);
+                goto out;
+            }
+
+            char next[2048];
+            if (http_resolve_location(cur_url, location_buf,
+                                      next, sizeof(next)) != 0) {
+                KOMARI_LOG_ERROR("http: unresolvable Location %s", location_buf);
+                goto out;
+            }
+
+            /* Drain the (typically empty) redirect body so nothing is left
+             * in flight; the final response's body is the one consumed. */
+            if (!req.body_writer) {
+                char tmp[HTTP_RAW_BUF_SIZE];
+                for (;;) {
+                    ssize_t n = http_stream_read(&stream, tmp, sizeof(tmp));
+                    if (n <= 0) break;
                 }
-                hdr.len = (size_t)(sep - hdr.data);
-                hdr.data[hdr.len] = '\0';
-                break;
             }
-            scan_from = hdr.len >= 3 ? hdr.len - 3 : 0;
+
+            /* 301/302/303 switch to GET and drop the body (RFC 9110
+             * §15.4.3/§15.4.2 historical behavior); 307/308 keep both. */
+            if (status == 301 || status == 302 || status == 303) {
+                if (!method_buf) {
+                    method_buf = strdup("GET");
+                    if (!method_buf) goto out;
+                }
+                method = method_buf;
+                req.body = NULL;
+                req.body_len = 0;
+                req.body_reader = NULL;
+                req.gzip_body = 0;
+            }
+
+            /* Cross-origin hops drop caller headers (credentials/cookies
+             * must not leak to the redirect target). */
+            http_url_t next_url;
+            if (http_url_parse(next, &next_url) == 0 &&
+                (strcmp(next_url.host, url.host) != 0 ||
+                 next_url.port != url.port)) {
+                req.extra_headers = NULL;
+            }
+
+            KOMARI_LOG_DEBUG("http: following %d redirect to %s", status, next);
+            snprintf(cur_url, sizeof(cur_url), "%s", next);
+            req.url = cur_url;
+            free(hdr.data);
+            hdr.data = NULL;
+            hdr.len = 0;
+            hdr.cap = 0;
+            continue;
         }
+
+        /* --- Stream the body into the requested sink. --- */
+        if (req.body_writer) {
+            char tmp[HTTP_RAW_BUF_SIZE];
+            for (;;) {
+                ssize_t n = http_stream_read(&stream, tmp, sizeof(tmp));
+                if (n < 0) {
+                    KOMARI_LOG_ERROR("http: body read error");
+                    goto out;
+                }
+                if (n == 0) break;
+                if (req.body_writer(req.writer_user, tmp, (size_t)n) != 0) {
+                    goto out;
+                }
+            }
+        } else if (req.response_buf && req.response_len > 0) {
+            size_t cap = req.response_len - 1;
+            size_t total = 0;
+            while (total < cap) {
+                ssize_t n = http_stream_read(&stream, req.response_buf + total,
+                                             cap - total);
+                if (n < 0) goto out;
+                if (n == 0) break;
+                total += (size_t)n;
+            }
+            req.response_buf[total] = '\0';
+        } else {
+            size_t max_resp = req.max_response ? req.max_response
+                                               : HTTP_CLIENT_DEFAULT_MAX_RESPONSE;
+            acc_cap_hop = 4096;
+            acc_hop = malloc(acc_cap_hop);
+            if (!acc_hop) goto out;
+            char tmp[HTTP_RAW_BUF_SIZE];
+            for (;;) {
+                ssize_t n = http_stream_read(&stream, tmp, sizeof(tmp));
+                if (n < 0) goto out;
+                if (n == 0) break;
+                if (acc_len_hop + (size_t)n > max_resp) {
+                    KOMARI_LOG_ERROR("http: response body exceeds %zu bytes", max_resp);
+                    goto out;
+                }
+                /* Grow the accumulator to fit the incoming chunk (plus NUL). */
+                if (acc_len_hop + (size_t)n + 1 > acc_cap_hop) {
+                    size_t new_cap = acc_cap_hop;
+                    while (acc_len_hop + (size_t)n + 1 > new_cap) new_cap *= 2;
+                    if (new_cap > max_resp + 1) new_cap = max_resp + 1;
+                    char *nb = realloc(acc_hop, new_cap);
+                    if (!nb) goto out;
+                    acc_hop = nb;
+                    acc_cap_hop = new_cap;
+                }
+                memcpy(acc_hop + acc_len_hop, tmp, (size_t)n);
+                acc_len_hop += (size_t)n;
+            }
+            acc_hop[acc_len_hop] = '\0';
+        }
+
+        ret = 0;
+        acc = acc_hop;
+        acc_len = acc_len_hop;
+        acc_hop = NULL; /* ownership moved to acc */
+        /* Remember whether this hop's body is gzip-encoded so the
+         * post-loop decode below applies to the final response. */
+        gzipped_final = gzipped;
+        free(hdr.data);
+        hdr.data = NULL;
+        break;
     }
 
-    /* --- Parse status line and framing headers. --- */
-    if (strncmp(hdr.data, "HTTP/1.", 7) != 0 || hdr.len < 12) {
-        KOMARI_LOG_ERROR("http: malformed status line");
-        goto out;
-    }
-    int status = atoi(hdr.data + 9);
-    if (status < 100 || status > 599) {
-        KOMARI_LOG_ERROR("http: invalid status code");
-        goto out;
-    }
-    resp->status = status;
-
-    int chunked = 0, gzipped = 0;
-    long content_length = -1;
-    char *save = NULL;
-    /* Walk header lines; the first line is the status line. */
-    for (char *line = strtok_r(hdr.data, "\r\n", &save); line;
-         line = strtok_r(NULL, "\r\n", &save)) {
-        if (line == hdr.data) continue;
-        if (http_header_name_is(line, "Transfer-Encoding")) {
-            if (http_strcasestr(http_header_value(line), "chunked")) chunked = 1;
-        } else if (http_header_name_is(line, "Content-Length")) {
-            content_length = strtol(http_header_value(line), NULL, 10);
-            if (content_length < 0) content_length = -1;
-        } else if (http_header_name_is(line, "Content-Encoding")) {
-            if (http_strcasestr(http_header_value(line), "gzip")) gzipped = 1;
-        }
-    }
-    (void)gzipped; /* Only consumed in buffered mode below. */
-
-    stream.chunked = chunked;
-    if (!chunked && content_length >= 0) stream.content_remaining = content_length;
-
-    /* --- Stream the body into the requested sink. --- */
-    if (req->body_writer) {
-        char tmp[HTTP_RAW_BUF_SIZE];
-        for (;;) {
-            ssize_t n = http_stream_read(&stream, tmp, sizeof(tmp));
-            if (n < 0) {
-                KOMARI_LOG_ERROR("http: body read error");
-                goto out;
-            }
-            if (n == 0) break;
-            if (req->body_writer(req->writer_user, tmp, (size_t)n) != 0) {
-                goto out;
-            }
-        }
-    } else if (req->response_buf && req->response_len > 0) {
-        size_t cap = req->response_len - 1;
-        size_t total = 0;
-        while (total < cap) {
-            ssize_t n = http_stream_read(&stream, req->response_buf + total,
-                                         cap - total);
-            if (n < 0) goto out;
-            if (n == 0) break;
-            total += (size_t)n;
-        }
-        req->response_buf[total] = '\0';
-    } else {
-        size_t max_resp = req->max_response ? req->max_response
-                                            : HTTP_CLIENT_DEFAULT_MAX_RESPONSE;
-        acc_cap = 4096;
-        acc = malloc(acc_cap);
-        if (!acc) goto out;
-        char tmp[HTTP_RAW_BUF_SIZE];
-        for (;;) {
-            ssize_t n = http_stream_read(&stream, tmp, sizeof(tmp));
-            if (n < 0) goto out;
-            if (n == 0) break;
-            if (acc_len + (size_t)n > max_resp) {
-                KOMARI_LOG_ERROR("http: response body exceeds %zu bytes", max_resp);
-                goto out;
-            }
-            /* Grow the accumulator to fit the incoming chunk (plus NUL). */
-            if (acc_len + (size_t)n + 1 > acc_cap) {
-                size_t new_cap = acc_cap;
-                while (acc_len + (size_t)n + 1 > new_cap) new_cap *= 2;
-                if (new_cap > max_resp + 1) new_cap = max_resp + 1;
-                char *nb = realloc(acc, new_cap);
-                if (!nb) goto out;
-                acc = nb;
-                acc_cap = new_cap;
-            }
-            memcpy(acc + acc_len, tmp, (size_t)n);
-            acc_len += (size_t)n;
-        }
-        acc[acc_len] = '\0';
-    }
-
-    ret = 0;
-
-out:
     /* Transport-level success: hand over the buffered body (and decode
      * gzip when the server ignored our implicit identity preference). */
     if (ret == 0 && acc) {
         char *final_body = acc;
         size_t final_len = acc_len;
-        if (gzipped && acc_len > 0) {
+        if (gzipped_final && acc_len > 0) {
             char *plain = NULL;
             size_t plain_len = 0;
             if (compress_gunzip(acc, acc_len, &plain, &plain_len) == 0) {
@@ -818,8 +963,12 @@ out:
     } else {
         free(acc);
     }
+
+out:
     if (ret != 0) resp->status = 0;
     free(hdr.data);
+    free(acc_hop);
+    free(method_buf);
     free(send_buf);
     free(gz_body);
     if (ssl) {
@@ -827,7 +976,8 @@ out:
         SSL_free(ssl);
     }
     if (ssl_ctx) SSL_CTX_free(ssl_ctx);
-    close(fd);
+    if (fd >= 0) close(fd);
+    if (res) freeaddrinfo(res);
     return ret;
 }
 
