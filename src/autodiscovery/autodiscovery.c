@@ -82,8 +82,17 @@ int autodiscovery_get_file_path(char *path, size_t path_len) {
             int wn = snprintf(path, path_len, "%.*s/auto-discovery.json",
                               (int)dir_len, exe);
             if (wn > 0 && (size_t)wn < path_len) {
-                if (utils_file_exists(path) || access(exe[0] ? "" : ".", W_OK) == 0) {
-                    return 0; /* existing file or writable directory */
+                /* Writability probe must target the DIRECTORY. The previous
+                 * access("", W_OK) probed an empty path (always ENOENT), so
+                 * the binary-dir branch was unreachable on first registration
+                 * and the config silently fell back to /tmp. */
+                char dir[768];
+                if (dir_len < sizeof(dir)) {
+                    memcpy(dir, exe, dir_len);
+                    dir[dir_len] = '\0';
+                    if (utils_file_exists(path) || access(dir, W_OK) == 0) {
+                        return 0; /* existing file or writable directory */
+                    }
                 }
             }
         }
