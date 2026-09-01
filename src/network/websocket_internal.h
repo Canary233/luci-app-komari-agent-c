@@ -45,11 +45,14 @@ struct ws_client {
     /* Fragmented message accumulation state (RFC 6455 §5.4).
      * fragment_buf accumulates continuation frame payloads until a final
      * frame (FIN=1) is received. Only the recv thread reads/writes these
-     * fields, so no extra locking is required. */
+     * fields, so no extra locking is required. fragment_rsv1 carries the
+     * message-level RSV1 of the first frame through to the completed
+     * message (permessage-deflate, RFC 7692). */
     char *fragment_buf;
     size_t fragment_len;
     size_t fragment_capacity;
     int fragment_opcode;
+    int fragment_rsv1;
 
     /* permessage-deflate state (RFC 7692). deflate_ctx compresses outgoing
      * messages, inflate_ctx decompresses incoming ones; both keep context
@@ -108,6 +111,8 @@ void ws_apply_mask(unsigned char *data, size_t len, const unsigned char mask[4])
  * @param client     Pointer to the client.
  * @param opcode     Frame opcode (0x00 continuation, 0x01 text, 0x02 binary).
  * @param fin        FIN bit (1 = final frame, 0 = more fragments to follow).
+ * @param rsv1       RSV1 bit of this frame; the first fragment's value is
+ *                   carried through to the completed message (RFC 7692).
  * @param data       Frame payload buffer (mutable; may be returned via `out`
  *                   for unfragmented messages).
  * @param len        Frame payload length.
@@ -115,16 +120,22 @@ void ws_apply_mask(unsigned char *data, size_t len, const unsigned char mask[4])
  *                   (either `data` for unfragmented messages or
  *                   `client->fragment_buf` for fragmented ones). The caller
  *                   may safely write a NUL terminator at `out[*out_len]`.
+ *                   For fragmented messages the buffer is owned by the
+ *                   client and must NOT be freed by the caller.
  * @param out_len    On return value 1, length of the complete message.
  * @param out_opcode On return value 1, opcode of the complete message
  *                   (0x01 text or 0x02 binary).
+ * @param out_rsv1   On return value 1, the message-level RSV1 (from the
+ *                   first fragment; 0 for unfragmented pass-through, where
+ *                   the caller already knows the frame's RSV1).
  * @return 0 = fragment accumulated, waiting for more data;
  *         1 = message complete (`out`/`out_len`/`out_opcode` set);
  *        -1 = error (oversize, allocation failure, or protocol error).
  */
 int ws_fragment_accumulate(ws_client_t *client, int opcode, int fin,
-                           char *data, size_t len,
-                           char **out, size_t *out_len, int *out_opcode);
+                           int rsv1, char *data, size_t len,
+                           char **out, size_t *out_len, int *out_opcode,
+                           int *out_rsv1);
 
 /* ====== v2 JSON-RPC event handling ======
  * The following helper is an internal function exposed for unit testing.

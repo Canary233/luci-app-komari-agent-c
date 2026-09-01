@@ -786,6 +786,7 @@ static void *ws_recv_thread(void *arg) {
      * fragments correctly. */
     client->fragment_len = 0;
     client->fragment_opcode = 0;
+    client->fragment_rsv1 = 0;
 
     while (1) {
         pthread_mutex_lock(&client->state_mutex);
@@ -802,7 +803,6 @@ static void *ws_recv_thread(void *arg) {
         size_t len = WS_MAX_MESSAGE_SIZE;
 
         int rsv1 = 0;
-        int rsv1_msg = 0;
         if (ws_recv_frame(client, &opcode, &fin, &rsv1, buffer, &len) != 0) {
             pthread_mutex_lock(&client->state_mutex);
             client->connected = false;
@@ -828,13 +828,19 @@ static void *ws_recv_thread(void *arg) {
             continue;
         }
 
-        /* Non-control frame: feed into the fragment accumulation state machine */
+        /* Non-control frame: feed into the fragment accumulation state machine.
+         * msg_data ownership: either `buffer` (unfragmented pass-through),
+         * `client->fragment_buf` (fragmented, owned by the client, never
+         * freed here), or a heap buffer produced by decompression below
+         * (freed after dispatch). */
         char *msg_data = NULL;
         size_t msg_len = 0;
         int msg_opcode = 0;
-        if (opcode != 0x00) rsv1_msg = rsv1; /* message flag from first frame */
-        int r = ws_fragment_accumulate(client, opcode, fin, buffer, len,
-                                       &msg_data, &msg_len, &msg_opcode);
+        int msg_rsv1 = 0;
+        if (opcode != 0x00) msg_rsv1 = rsv1; /* message flag from first frame */
+        int r = ws_fragment_accumulate(client, opcode, fin, rsv1, buffer, len,
+                                       &msg_data, &msg_len, &msg_opcode,
+                                       &msg_rsv1);
         if (r < 0) {
             /* Oversize, allocation failure or protocol error: close the
              * connection so the caller can reconnect with a clean state. */
@@ -849,37 +855,32 @@ static void *ws_recv_thread(void *arg) {
         }
 
         /* Message complete: permessage-deflate decompression (RFC 7692).
-         * The message-level RSV1 comes from the first frame; the fragment
-         * accumulator preserves the wire payload intact, so decompression
-         * happens here, once per message, before any consumer sees it. */
-        if (rsv1_msg && msg_len > 0) {
+         * The message-level RSV1 comes from the first frame (carried through
+         * fragment accumulation), so fragmented compressed messages are
+         * decompressed exactly like unfragmented ones. */
+        char *inflated = NULL; /* heap buffer replacing msg_data when set */
+        if (msg_rsv1 && msg_len > 0) {
             char *plain = NULL;
             size_t plain_len = 0;
             if (compress_raw_inflate(&client->inflate_ctx, msg_data, msg_len,
                                      1, WS_FRAGMENT_MAX_SIZE,
-                                     &plain, &plain_len) == 0) {
-                if (plain_len + 1 <= WS_FRAGMENT_MAX_SIZE) {
-                    if (msg_data != buffer) free(msg_data);
-                    msg_data = plain;
-                    msg_len = plain_len;
-                } else {
-                    free(plain);
-                    KOMARI_LOG_WARN("[ws] inflated message exceeds limit, closing");
-                    pthread_mutex_lock(&client->state_mutex);
-                    client->connected = false;
-                    pthread_mutex_unlock(&client->state_mutex);
-                    free(msg_data != buffer ? msg_data : NULL);
-                    break;
-                }
+                                     &plain, &plain_len) == 0 &&
+                plain_len + 1 <= WS_FRAGMENT_MAX_SIZE) {
+                inflated = plain;
+                msg_len = plain_len;
             } else {
-                KOMARI_LOG_WARN("[ws] deflate decompression failed, closing");
+                free(plain);
+                KOMARI_LOG_WARN("[ws] inflate failed or inflated message "
+                                "exceeds limit, closing");
                 pthread_mutex_lock(&client->state_mutex);
                 client->connected = false;
                 pthread_mutex_unlock(&client->state_mutex);
-                if (msg_data != buffer) free(msg_data);
                 break;
             }
         }
+        /* `buffer` and fragment_buf are owned elsewhere and reused across
+         * messages, so only an inflated buffer is freed after dispatch. */
+        if (inflated) msg_data = inflated;
 
         /* Message complete: dispatch to the appropriate handler */
         if (msg_opcode == 0x01) {
@@ -924,6 +925,11 @@ static void *ws_recv_thread(void *arg) {
                 client->raw_handler(client, msg_data, msg_len);
             }
         }
+
+        /* Release the inflated heap buffer, if this message was decompressed.
+         * `buffer` and fragment_buf are reused across messages and must not
+         * be freed here. */
+        free(inflated);
     }
 
     free(buffer);
@@ -939,9 +945,10 @@ static void *ws_recv_thread(void *arg) {
  * Returns 0 when more fragments are needed, 1 when the message is complete
  * (out/out_len/out_opcode are populated), or -1 on error. */
 int ws_fragment_accumulate(ws_client_t *client, int opcode, int fin,
-                           char *data, size_t len,
-                           char **out, size_t *out_len, int *out_opcode) {
-    if (!client || !data || !out || !out_len || !out_opcode) {
+                           int rsv1, char *data, size_t len,
+                           char **out, size_t *out_len, int *out_opcode,
+                           int *out_rsv1) {
+    if (!client || !data || !out || !out_len || !out_opcode || !out_rsv1) {
         return -1;
     }
 
@@ -955,6 +962,7 @@ int ws_fragment_accumulate(ws_client_t *client, int opcode, int fin,
                             "(opcode=%d) received while fragment in progress", opcode);
             client->fragment_len = 0;
             client->fragment_opcode = 0;
+            client->fragment_rsv1 = 0;
             return -1;
         }
         *out = data;
@@ -970,6 +978,7 @@ int ws_fragment_accumulate(ws_client_t *client, int opcode, int fin,
                             "started while previous fragment in progress", opcode);
             client->fragment_len = 0;
             client->fragment_opcode = 0;
+            client->fragment_rsv1 = 0;
             return -1;
         }
 
@@ -997,6 +1006,7 @@ int ws_fragment_accumulate(ws_client_t *client, int opcode, int fin,
         memcpy(client->fragment_buf, data, len);
         client->fragment_len = len;
         client->fragment_opcode = opcode;
+        client->fragment_rsv1 = rsv1;
         return 0;
     }
 
@@ -1015,6 +1025,7 @@ int ws_fragment_accumulate(ws_client_t *client, int opcode, int fin,
                             "closing connection", WS_FRAGMENT_MAX_SIZE);
             client->fragment_len = 0;
             client->fragment_opcode = 0;
+            client->fragment_rsv1 = 0;
             return -1;
         }
 
@@ -1028,6 +1039,7 @@ int ws_fragment_accumulate(ws_client_t *client, int opcode, int fin,
             if (!new_buf) {
                 client->fragment_len = 0;
                 client->fragment_opcode = 0;
+                client->fragment_rsv1 = 0;
                 return -1;
             }
             client->fragment_buf = new_buf;
@@ -1038,14 +1050,17 @@ int ws_fragment_accumulate(ws_client_t *client, int opcode, int fin,
 
         if (fin) {
             /* Final fragment: hand the assembled message back to the caller.
-             * Both fragment_len and fragment_opcode are reset so the buffer
-             * can be reused for the next message; fragment_buf itself stays
-             * allocated to avoid a malloc/free churn on the next message. */
+             * fragment_len/fragment_opcode/fragment_rsv1 are reset so the
+             * state is ready for the next message; fragment_buf itself stays
+             * allocated to avoid a malloc/free churn on the next message
+             * (the caller therefore never frees the returned buffer). */
             *out = client->fragment_buf;
             *out_len = client->fragment_len;
             *out_opcode = client->fragment_opcode;
+            *out_rsv1 = client->fragment_rsv1;
             client->fragment_len = 0;
             client->fragment_opcode = 0;
+            client->fragment_rsv1 = 0;
             return 1;
         }
         return 0;
@@ -1566,11 +1581,6 @@ int ws_client_connect(ws_client_t *client) {
 }
 
 void ws_client_disconnect(ws_client_t *client) {
-    if (client && client->deflate_negotiated) {
-        compress_raw_deflate_end(&client->deflate_ctx);
-        compress_raw_inflate_end(&client->inflate_ctx);
-        client->deflate_negotiated = false;
-    }
     if (!client) return;
 
     pthread_mutex_lock(&client->state_mutex);
@@ -1612,6 +1622,17 @@ void ws_client_disconnect(ws_client_t *client) {
     if (client->fd >= 0) {
         close(client->fd);
         client->fd = -1;
+    }
+
+    /* Tear down the permessage-deflate contexts only after the recv thread
+     * has exited: the recv thread calls compress_raw_inflate on
+     * client->inflate_ctx (and the send path uses deflate_ctx) with no lock
+     * shared with this function, so freeing them before the join was a
+     * use-after-free window when disconnect raced an in-flight message. */
+    if (client->deflate_negotiated) {
+        compress_raw_deflate_end(&client->deflate_ctx);
+        compress_raw_inflate_end(&client->inflate_ctx);
+        client->deflate_negotiated = false;
     }
 }
 

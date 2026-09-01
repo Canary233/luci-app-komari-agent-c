@@ -343,9 +343,10 @@ void test_ws_fragment_unfragmented_text(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
 
     /* FIN=1, opcode=0x01 (text): unfragmented message returns immediately */
-    int r = ws_fragment_accumulate(client, 0x01, 1, data, len, &out, &out_len, &out_opcode);
+    int r = ws_fragment_accumulate(client, 0x01, 1, 0, data, len, &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(1, r);
     TEST_ASSERT_EQUAL_PTR(data, out);
     TEST_ASSERT_EQUAL_size_t(len, out_len);
@@ -368,9 +369,10 @@ void test_ws_fragment_unfragmented_binary(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
 
     /* FIN=1, opcode=0x02 (binary): unfragmented message returns immediately */
-    int r = ws_fragment_accumulate(client, 0x02, 1, data, len, &out, &out_len, &out_opcode);
+    int r = ws_fragment_accumulate(client, 0x02, 1, 0, data, len, &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(1, r);
     TEST_ASSERT_EQUAL_PTR(data, out);
     TEST_ASSERT_EQUAL_size_t(len, out_len);
@@ -396,24 +398,25 @@ void test_ws_fragment_multi_text(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
 
     /* First fragment: FIN=0, opcode=0x01 (text) */
-    int r = ws_fragment_accumulate(client, 0x01, 0, part1, strlen(part1),
-                                   &out, &out_len, &out_opcode);
+    int r = ws_fragment_accumulate(client, 0x01, 0, 0, part1, strlen(part1),
+                                   &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(0, r);
     TEST_ASSERT_NOT_NULL(client->fragment_buf);
     TEST_ASSERT_EQUAL_size_t(strlen(part1), client->fragment_len);
     TEST_ASSERT_EQUAL_INT(0x01, client->fragment_opcode);
 
     /* Middle fragment: FIN=0, opcode=0x00 (continuation) */
-    r = ws_fragment_accumulate(client, 0x00, 0, part2, strlen(part2),
-                               &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x00, 0, 0, part2, strlen(part2),
+                               &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(0, r);
     TEST_ASSERT_EQUAL_size_t(strlen(part1) + strlen(part2), client->fragment_len);
 
     /* Final fragment: FIN=1, opcode=0x00 (continuation) */
-    r = ws_fragment_accumulate(client, 0x00, 1, part3, strlen(part3),
-                               &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x00, 1, 0, part3, strlen(part3),
+                               &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(1, r);
     TEST_ASSERT_EQUAL_PTR(client->fragment_buf, out);
     TEST_ASSERT_EQUAL_size_t(strlen(expected), out_len);
@@ -440,21 +443,22 @@ void test_ws_fragment_multi_binary(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
 
     /* First fragment: FIN=0, opcode=0x02 (binary) */
-    int r = ws_fragment_accumulate(client, 0x02, 0, (char *)part1, sizeof(part1),
-                                   &out, &out_len, &out_opcode);
+    int r = ws_fragment_accumulate(client, 0x02, 0, 0, (char *)part1, sizeof(part1),
+                                   &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(0, r);
     TEST_ASSERT_EQUAL_INT(0x02, client->fragment_opcode);
 
     /* Middle fragment */
-    r = ws_fragment_accumulate(client, 0x00, 0, (char *)part2, sizeof(part2),
-                               &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x00, 0, 0, (char *)part2, sizeof(part2),
+                               &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(0, r);
 
     /* Final fragment */
-    r = ws_fragment_accumulate(client, 0x00, 1, (char *)part3, sizeof(part3),
-                               &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x00, 1, 0, (char *)part3, sizeof(part3),
+                               &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(1, r);
     TEST_ASSERT_EQUAL_size_t(sizeof(expected), out_len);
     TEST_ASSERT_EQUAL_INT(0x02, out_opcode);
@@ -478,9 +482,10 @@ void test_ws_fragment_oversize(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
 
     /* Start a new fragment with FIN=0, opcode=0x01 */
-    int r = ws_fragment_accumulate(client, 0x01, 0, data, chunk, &out, &out_len, &out_opcode);
+    int r = ws_fragment_accumulate(client, 0x01, 0, 0, data, chunk, &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(0, r);
 
     /* Keep appending continuation frames until we exceed WS_FRAGMENT_MAX_SIZE.
@@ -488,8 +493,8 @@ void test_ws_fragment_oversize(void) {
      * total to 17*64KB = 1.0625 MB > 1 MB, which must be rejected. */
     int saw_error = 0;
     for (int i = 0; i < 20; i++) {
-        r = ws_fragment_accumulate(client, 0x00, 0, data, chunk,
-                                   &out, &out_len, &out_opcode);
+        r = ws_fragment_accumulate(client, 0x00, 0, 0, data, chunk,
+                                   &out, &out_len, &out_opcode, &out_rsv1);
         if (r < 0) {
             saw_error = 1;
             break;
@@ -510,10 +515,11 @@ void test_ws_fragment_continuation_without_start(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
 
     /* Continuation frame without a preceding first fragment: protocol error */
-    int r = ws_fragment_accumulate(client, 0x00, 1, data, strlen(data),
-                                   &out, &out_len, &out_opcode);
+    int r = ws_fragment_accumulate(client, 0x00, 1, 0, data, strlen(data),
+                                   &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(-1, r);
 
     ws_client_destroy(client);
@@ -529,16 +535,17 @@ void test_ws_fragment_new_opcode_during_fragment(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
 
     /* Start a fragment */
-    int r = ws_fragment_accumulate(client, 0x01, 0, part1, strlen(part1),
-                                   &out, &out_len, &out_opcode);
+    int r = ws_fragment_accumulate(client, 0x01, 0, 0, part1, strlen(part1),
+                                   &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(0, r);
 
     /* Receive a new text frame (FIN=1, opcode=0x01) while fragment in progress:
      * RFC 6455 §5.4 forbids this; the accumulator must report a protocol error. */
-    r = ws_fragment_accumulate(client, 0x01, 1, part2, strlen(part2),
-                               &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x01, 1, 0, part2, strlen(part2),
+                               &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(-1, r);
 
     ws_client_destroy(client);
@@ -552,23 +559,24 @@ void test_ws_fragment_reset_after_complete(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
 
     /* First message: 2-fragment text */
     char part1[] = "hello ";
     char part2[] = "world";
-    int r = ws_fragment_accumulate(client, 0x01, 0, part1, strlen(part1),
-                                   &out, &out_len, &out_opcode);
+    int r = ws_fragment_accumulate(client, 0x01, 0, 0, part1, strlen(part1),
+                                   &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(0, r);
-    r = ws_fragment_accumulate(client, 0x00, 1, part2, strlen(part2),
-                               &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x00, 1, 0, part2, strlen(part2),
+                               &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(1, r);
     TEST_ASSERT_EQUAL_size_t(11, out_len);
     TEST_ASSERT_EQUAL_INT(0x01, out_opcode);
 
     /* Second message: unfragmented text after a completed fragmented message */
     char msg2[] = "{\"ok\":true}";
-    r = ws_fragment_accumulate(client, 0x01, 1, msg2, strlen(msg2),
-                               &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x01, 1, 0, msg2, strlen(msg2),
+                               &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(1, r);
     TEST_ASSERT_EQUAL_PTR(msg2, out);
     TEST_ASSERT_EQUAL_size_t(strlen(msg2), out_len);
@@ -576,11 +584,11 @@ void test_ws_fragment_reset_after_complete(void) {
     /* Third message: another fragmented text, verifying buffer reuse */
     char part3[] = "second ";
     char part4[] = "message";
-    r = ws_fragment_accumulate(client, 0x01, 0, part3, strlen(part3),
-                               &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x01, 0, 0, part3, strlen(part3),
+                               &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(0, r);
-    r = ws_fragment_accumulate(client, 0x00, 1, part4, strlen(part4),
-                               &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x00, 1, 0, part4, strlen(part4),
+                               &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(1, r);
     TEST_ASSERT_EQUAL_size_t(strlen(part3) + strlen(part4), out_len);
     TEST_ASSERT_EQUAL_INT(0x01, out_opcode);
@@ -599,21 +607,22 @@ void test_ws_fragment_empty_payloads(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
     char empty[] = "";
     char tail[] = "X";
 
     /* First fragment with empty payload */
-    int r = ws_fragment_accumulate(client, 0x01, 0, empty, 0, &out, &out_len, &out_opcode);
+    int r = ws_fragment_accumulate(client, 0x01, 0, 0, empty, 0, &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(0, r);
     TEST_ASSERT_EQUAL_size_t(0, client->fragment_len);
 
     /* Middle fragment with empty payload */
-    r = ws_fragment_accumulate(client, 0x00, 0, empty, 0, &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x00, 0, 0, empty, 0, &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(0, r);
     TEST_ASSERT_EQUAL_size_t(0, client->fragment_len);
 
     /* Final fragment with one byte */
-    r = ws_fragment_accumulate(client, 0x00, 1, tail, 1, &out, &out_len, &out_opcode);
+    r = ws_fragment_accumulate(client, 0x00, 1, 0, tail, 1, &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(1, r);
     TEST_ASSERT_EQUAL_size_t(1, out_len);
     TEST_ASSERT_EQUAL_INT(0x01, out_opcode);
@@ -631,12 +640,13 @@ void test_ws_fragment_null_args(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
 
-    TEST_ASSERT_EQUAL_INT(-1, ws_fragment_accumulate(NULL, 0x01, 1, data, 1, &out, &out_len, &out_opcode));
-    TEST_ASSERT_EQUAL_INT(-1, ws_fragment_accumulate(client, 0x01, 1, NULL, 1, &out, &out_len, &out_opcode));
-    TEST_ASSERT_EQUAL_INT(-1, ws_fragment_accumulate(client, 0x01, 1, data, 1, NULL, &out_len, &out_opcode));
-    TEST_ASSERT_EQUAL_INT(-1, ws_fragment_accumulate(client, 0x01, 1, data, 1, &out, NULL, &out_opcode));
-    TEST_ASSERT_EQUAL_INT(-1, ws_fragment_accumulate(client, 0x01, 1, data, 1, &out, &out_len, NULL));
+    TEST_ASSERT_EQUAL_INT(-1, ws_fragment_accumulate(NULL, 0x01, 1, 0, data, 1, &out, &out_len, &out_opcode, &out_rsv1));
+    TEST_ASSERT_EQUAL_INT(-1, ws_fragment_accumulate(client, 0x01, 1, 0, NULL, 1, &out, &out_len, &out_opcode, &out_rsv1));
+    TEST_ASSERT_EQUAL_INT(-1, ws_fragment_accumulate(client, 0x01, 1, 0, data, 1, NULL, &out_len, &out_opcode, &out_rsv1));
+    TEST_ASSERT_EQUAL_INT(-1, ws_fragment_accumulate(client, 0x01, 1, 0, data, 1, &out, NULL, &out_opcode, &out_rsv1));
+    TEST_ASSERT_EQUAL_INT(-1, ws_fragment_accumulate(client, 0x01, 1, 0, data, 1, &out, &out_len, NULL, &out_rsv1));
 
     ws_client_destroy(client);
 }
@@ -651,9 +661,10 @@ void test_ws_fragment_invalid_continuation_fin0(void) {
     char *out = NULL;
     size_t out_len = 0;
     int out_opcode = 0;
+    int out_rsv1 = 0;
 
     /* FIN=0, opcode=0x00 without prior start: protocol error */
-    int r = ws_fragment_accumulate(client, 0x00, 0, data, 1, &out, &out_len, &out_opcode);
+    int r = ws_fragment_accumulate(client, 0x00, 0, 0, data, 1, &out, &out_len, &out_opcode, &out_rsv1);
     TEST_ASSERT_EQUAL_INT(-1, r);
 
     ws_client_destroy(client);
