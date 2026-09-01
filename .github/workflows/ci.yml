@@ -263,7 +263,7 @@ jobs:
 
       - name: Spell check
         run: |
-          codespell --skip=".git,*.po,*.ipk,*.apk,*.lmo" --ignore-words-list="ba,dne,nce,nam,ot,tht"
+          codespell --skip=".git,*.po,*.ipk,*.apk,*.lmo,komari-agent-main" --ignore-words-list="ba,dne,nce,nam,ot,tht"
 
       - name: Check shell scripts
         run: |

@@ -132,7 +132,7 @@ void test_op_list_orders_dirs_first(void) {
     TEST_ASSERT_NOT_NULL(f);
     fputs("x", f);
     fclose(f);
-    snprintf(p, sizeof(p), "%s/afile.txt", tmp_dir);
+    snprintf(p, sizeof(p), "%s/zfile.txt", tmp_dir);
     f = fopen(p, "w");
     TEST_ASSERT_NOT_NULL(f);
     fputs("x", f);

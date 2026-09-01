@@ -306,7 +306,7 @@ class CIConfigValidator:
                 f"got: {lint.get('needs')}"
             )
         else:
-            # A missing or unparseable workflow must fail the run instead of
+            # A missing or malformed workflow must fail the run instead of
             # silently skipping every enclosed check.
             self.check("ci.yml: readable for job dependency check", False, err)
 
@@ -322,7 +322,7 @@ class CIConfigValidator:
                 f"got: {release_needs}"
             )
         else:
-            # A missing or unparseable workflow must fail the run instead of
+            # A missing or malformed workflow must fail the run instead of
             # silently skipping every enclosed check.
             self.check("release.yml: readable for job dependency check", False, err)
 
