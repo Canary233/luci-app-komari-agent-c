@@ -65,6 +65,8 @@ fix(openwrt): 修复系统用户创建、procd 环境注入与令牌暴露
 
 ## Build and Test
 
+The commands below run inside the `komari-agent-c/` directory (which holds the C source and the CMake project).
+
 ### Local Build
 
 ```bash
@@ -84,25 +86,6 @@ cmake --preset default
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
-
-### Run Tests in Docker
-
-Run tests without installing a local toolchain:
-
-```bash
-./scripts/docker-build.sh test
-```
-
-### Cross-Architecture Compilation
-
-Docker-based cross-compilation for 8 CPU architectures:
-
-```bash
-./scripts/docker-build.sh amd64    # Single architecture
-./scripts/docker-build.sh all      # All architectures
-```
-
-See [docker/README.md](docker/README.md) for details.
 
 ### CMake Presets
 
@@ -135,7 +118,7 @@ The project provides 9 standardized presets (see `CMakePresets.json`):
 3. Ensure local build and unit tests pass
 4. Submit a PR with a title following Conventional Commits format (e.g., `fix(core): 修复 xxx` or `fix(core): fix xxx`)
 5. Describe the motivation, scope of impact, and test results in the PR description
-6. Wait for CI checks (8-arch Docker binary build, 10-arch OpenWrt package build, LuCI package build, code quality checks)
+6. Wait for CI checks (10-arch OpenWrt package build, LuCI package build, code quality checks, unit tests)
 
 ## Project Structure
 
@@ -151,8 +134,6 @@ luci-app-komari-agent-c/
 │   ├── Makefile             # OpenWrt package definition
 │   ├── CMakeLists.txt       # Top-level CMake configuration
 │   └── CMakePresets.json    # 9 standardized build presets
-├── docker/                  # Docker cross-compile environment
-├── scripts/                 # Build/package/verify scripts
 ├── .github/workflows/       # CI/CD configuration (ci.yml + release.yml)
 └── AGENTS.md                # Project maintenance guide (internal)
 ```

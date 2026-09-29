@@ -210,6 +210,8 @@ uci commit komari-agent-c
 
 ## 本地构建
 
+以下命令在 `komari-agent-c/` 目录中执行（C 源码与 CMake 工程位于该目录）。
+
 ### 标准构建（CMake）
 
 ```bash
@@ -238,34 +240,11 @@ cmake --preset openwrt      # OpenWrt 交叉编译（需 SDK 环境）
 cmake --preset analyze      # clang-tidy 静态分析
 ```
 
-### Docker 交叉编译
-
-支持 8 种 CPU 架构的 Docker 化交叉编译，无需本地安装工具链：
-
-```bash
-# 构建单架构
-./scripts/docker-build.sh amd64
-
-# 构建所有架构
-./scripts/docker-build.sh all
-
-# 运行单元测试
-./scripts/docker-build.sh test
-
-# 供应链锁定：--build-arg BASE_IMAGE=<digest 锁定镜像>（流程见 docker/README.md）
-./scripts/docker-build.sh amd64 --build-arg BASE_IMAGE=ubuntu:24.04@sha256:<digest>
-```
-
-详见 [docker/README.md](docker/README.md)。
-
 ### 运行测试
 
 ```bash
 cmake -B build -DBUILD_TESTING=ON && cmake --build build
 ctest --test-dir build --output-on-failure
-
-# 或使用 Docker 运行（无需本地工具链，CI 采用同一方式）
-./scripts/docker-build.sh test
 ```
 
 ## 系统要求

@@ -9,11 +9,11 @@
 - **语言**：C (C99)
 - **构建系统**：CMake（模块化配置，见 `komari-agent-c/cmake/` 目录）
 - **CI/CD**：GitHub Actions（`ci.yml` + `release.yml`）
-- **目标平台**：Linux、OpenWrt、8 种 CPU 架构
+- **目标平台**：Linux、OpenWrt（多架构）
 - **前端界面**：LuCI（Lua + CBI 框架，支持中英文 i18n）
 - **测试框架**：Unity v2.6.1
 - **第三方库**：cJSON v1.7.19、OpenSSL (>=1.1.0)、zlib (>=1.2.11)
-- **交叉编译**：Docker 化构建（Dockerfile.build + Dockerfile.legacy）
+- **交叉编译**：OpenWrt SDK（`cmake --preset openwrt`）
 
 ## 开发规范
 
@@ -78,7 +78,6 @@ fix(core): 修复死配置、堆栈溢出与阻塞风险等跨模块问题
 - 测试文件放置在 `tests/` 目录下
 - `KOMARI_BUILD_TESTS` 与 `BUILD_TESTING` 两个选项同步（见 `komari-agent-c/cmake/BuildOptions.cmake`）
 - 运行测试：`cmake -B build -DKOMARI_BUILD_TESTS=ON && cmake --build build && ctest --test-dir build --output-on-failure`
-- Docker 环境运行测试：`./scripts/docker-build.sh test`——这是单元测试唯一的标准执行环境（CI 中由 `lint` job 的 `docker compose run --rm test` 执行），宿主机直连构建仅用于配置/语法检查
 
 ### 本地构建
 
@@ -107,20 +106,6 @@ cmake --preset coverage     # 代码覆盖率
 cmake --preset openwrt      # OpenWrt 交叉编译（需 SDK 环境）
 cmake --preset analyze      # clang-tidy 静态分析
 ```
-
-#### Docker 交叉编译
-
-支持 8 种 CPU 架构的 Docker 化交叉编译，无需本地安装工具链：
-
-```bash
-./scripts/docker-build.sh amd64    # 构建单架构
-./scripts/docker-build.sh all      # 构建所有架构
-./scripts/docker-build.sh test     # 运行单元测试
-# 供应链锁定：--build-arg BASE_IMAGE=<digest 锁定镜像>，流程见 docker/README.md
-./scripts/docker-build.sh amd64 --build-arg BASE_IMAGE=ubuntu:24.04@sha256:<digest>
-```
-
-详见 [docker/README.md](docker/README.md)。
 
 ### macOS 开发环境说明
 
@@ -224,8 +209,6 @@ luci-app-komari-agent-c/
 │   ├── Makefile             # OpenWrt 包定义
 │   ├── CMakeLists.txt       # 顶层 CMake 配置
 │   └── CMakePresets.json    # 9 个标准化构建预设
-├── docker/                  # Docker 交叉编译环境
-├── scripts/                # 构建/测试/发布/版本管理脚本（10 个）+ ipkg/ 模板目录
 ├── .github/workflows/       # CI/CD 配置（ci.yml + release.yml）
 └── AGENTS.md                # 本文件
 ```
@@ -275,28 +258,25 @@ Linux/OpenWrt 默认启用 5 项硬化选项：
 
 ### CI（`.github/workflows/ci.yml`）
 
-推送/PR 到 `main`/`develop` 分支时触发，包含 4 个 job：
+推送/PR 到 `main`/`develop` 分支时触发，包含 3 个 job：
 
-1. **test-binary-build** — 8 架构 Docker 二进制构建矩阵（amd64/arm64/arm/armv7/mipsel/mips64/riscv64/386）
-2. **test-openwrt-build** — 10 个 OpenWrt 架构 × 2 个版本（24.10.6、25.12.2）矩阵
-3. **test-luci-build** — LuCI 包构建测试（24.10.6、25.12.2）
-4. **lint** — 代码质量检查（codespell、shell 语法、YAML 校验、verify_ci_config.py、Docker 单元测试）
+1. **test-openwrt-build** — 10 个 OpenWrt 架构 × 2 个版本（24.10.6、25.12.2）矩阵
+2. **test-luci-build** — LuCI 包构建测试（24.10.6、25.12.2）
+3. **lint** — 代码质量检查（codespell、shell 语法、CMake 单元测试）
 
 ### Release（`.github/workflows/release.yml`）
 
-推送 `v*` tag 时触发，包含 4 个 job：
+推送 `v*` tag 时触发，包含 3 个 job：
 
 1. **build-openwrt** — 构建 OpenWrt IPK/APK 包（10 架构 × 2 版本）
-2. **build-binaries** — 构建独立二进制（8 架构 Docker）
-3. **build-luci** — 构建 LuCI 包（2 版本）
-4. **release** — 汇总产物并创建 GitHub Release
+2. **build-luci** — 构建 LuCI 包（2 版本）
+3. **release** — 汇总产物并创建 GitHub Release
 
 ### 依赖更新（`.github/dependabot.yml`）
 
 Dependabot 自动管理依赖版本更新，每周一检查：
 
 - **github-actions** — PR 标题格式 `ci(deps): bump <action> from <old> to <new>`
-- **docker** — PR 标题格式 `build(deps): bump <image> from <old> to <new>`
 
 ### 代码质量工具
 
@@ -304,20 +284,7 @@ Dependabot 自动管理依赖版本更新，每周一检查：
 
 - **codespell** — 拼写检查。如需新增忽略词，编辑 `ci.yml` 中 `codespell` 命令的 `--ignore-words-list` 参数
 - **Shell 语法** — 通过 `bash -n` 检查所有 `.sh` 文件
-- **YAML 校验** — 验证 workflow 文件 YAML 语法
-- **verify_ci_config.py** — CI 配置一致性校验，可本地运行：`python scripts/verify_ci_config.py all`
-
-### 管理脚本
-
-`scripts/` 目录包含 10 个工具脚本（另含 `ipkg/` 打包模板目录），除 `docker-build.sh` 和 `update-version.sh` 外，还包括：
-
-- `verify_ci_config.py` — CI 配置验证（见上文）
-- `lock-docker-images.sh` — 锁定 Docker 镜像摘要
-- `apk-build.sh` / `ipkg-build.sh` — APK/IPK 包构建；`ipkg-build.sh -a <arch>` 可覆盖控制文件中的 Architecture 占位值
-- `musl-check.sh` — musl libc 兼容性检查
-- `generate-release-notes.sh` — 生成 Release Notes
-- `openwrt-build.sh` — OpenWrt 独立构建包装
-- `build.sh` — 通用构建入口
+- **单元测试** — 在 `komari-agent-c/` 中执行 `cmake -B build -DKOMARI_BUILD_TESTS=ON && ctest --test-dir build`
 
 ## LuCI 前端
 
@@ -333,13 +300,11 @@ LuCI 前端位于 `luci-app-komari-agent-c/` 目录，提供 Web 配置界面：
 
 ### 版本同步
 
-以下三处版本号必须与主项目版本保持一致，由 `scripts/update-version.sh` 统一更新：
+以下三处版本号必须与主项目版本保持一致，发布新版本时需同步更新：
 
 1. `komari-agent-c/include/komari-agent-c/version.h` — `KOMARI_AGENT_C_VERSION_*` 宏
 2. `komari-agent-c/Makefile` — `PKG_VERSION`
 3. `luci-app-komari-agent-c/Makefile` — `PKG_VERSION`
-
-发布新版本时，通过 `scripts/update-version.sh <version>` 一次性同步所有位置。
 
 ### OpenWrt 服务（procd）
 
@@ -352,17 +317,4 @@ LuCI 前端位于 `luci-app-komari-agent-c/` 目录，提供 Web 配置界面：
 
 ## 多架构支持
 
-支持 8 种 CPU 架构的交叉编译：
-
-| GOARCH | Debian 架构 | 编译器 | 基础镜像 |
-|--------|------------|--------|---------|
-| amd64 | amd64 | gcc | Ubuntu 24.04 |
-| arm64 | arm64 | aarch64-linux-gnu-gcc | Ubuntu 24.04 |
-| arm | armel | arm-linux-gnueabi-gcc | Debian 12 (bookworm-slim) |
-| armv7 | armhf | arm-linux-gnueabihf-gcc | Ubuntu 24.04 |
-| mipsel | mipsel | mipsel-linux-gnu-gcc | Debian 12 (bookworm-slim) |
-| mips64 | mips64el | mips64el-linux-gnuabi64-gcc | Debian 12 (bookworm-slim) |
-| riscv64 | riscv64 | riscv64-linux-gnu-gcc | Ubuntu 24.04 |
-| 386 | i386 | i686-linux-gnu-gcc | Ubuntu 24.04 |
-
-armel/mipsel/mips64el 使用 Debian 12 (bookworm-slim)，因为这些架构在 Ubuntu 24.04 ports 仓库中缺少 `libc6-dev-*-cross` 包。
+Agent 使用标准 C/POSIX API，可通过 OpenWrt SDK 的交叉工具链为各目标架构编译（CI 覆盖 10 个 OpenWrt 架构，见上）。独立二进制可用目标架构的交叉编译器配合 `cmake/toolchain-openwrt.cmake` 自行构建。

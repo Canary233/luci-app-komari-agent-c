@@ -210,6 +210,8 @@ uci commit komari-agent-c
 
 ## Local Build
 
+The commands below run inside the `komari-agent-c/` directory (which holds the C source and the CMake project).
+
 ### Standard Build (CMake)
 
 ```bash
@@ -238,34 +240,11 @@ cmake --preset openwrt      # OpenWrt cross-compile (requires SDK env)
 cmake --preset analyze      # clang-tidy static analysis
 ```
 
-### Docker Cross-Compilation
-
-Docker-based cross-compilation for 8 CPU architectures, no local toolchain required:
-
-```bash
-# Build a single architecture
-./scripts/docker-build.sh amd64
-
-# Build all architectures
-./scripts/docker-build.sh all
-
-# Run unit tests
-./scripts/docker-build.sh test
-
-# Supply-chain pinning: --build-arg BASE_IMAGE=<digest-pinned image> (workflow in docker/README.md)
-./scripts/docker-build.sh amd64 --build-arg BASE_IMAGE=ubuntu:24.04@sha256:<digest>
-```
-
-See [docker/README.md](docker/README.md) for details.
-
 ### Running Tests
 
 ```bash
 cmake -B build -DBUILD_TESTING=ON && cmake --build build
 ctest --test-dir build --output-on-failure
-
-# Or run tests in Docker (no local toolchain required, same as CI)
-./scripts/docker-build.sh test
 ```
 
 ## System Requirements

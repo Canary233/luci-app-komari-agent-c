@@ -39,13 +39,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Sync version from git tag
-        if: github.ref_type == 'tag'
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          chmod +x scripts/update-version.sh
-          scripts/update-version.sh "$VERSION"
-
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y gcc-multilib
 
@@ -91,65 +84,6 @@ jobs:
           path: logs/
           retention-days: 1
 
-  build-binaries:
-    name: Build linux/${{ matrix.goarch }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        goarch: [amd64, arm64, arm, armv7, mipsel, mips64, riscv64, 386]
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Sync version from git tag
-        if: github.ref_type == 'tag'
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          chmod +x scripts/update-version.sh
-          scripts/update-version.sh "$VERSION"
-
-      - name: Build binary in Docker
-        run: |
-          mkdir -p output
-          docker compose -f docker/docker-compose.yml run --rm build-${{ matrix.goarch }}
-
-      - name: Get version
-        id: get_version
-        run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Verify and package binary
-        run: |
-          VERSION="${{ steps.get_version.outputs.VERSION }}"
-          GOARCH="${{ matrix.goarch }}"
-          BINARY="output/komari-agent-c-linux-${GOARCH}"
-
-          if [ ! -f "$BINARY" ]; then
-            echo "Error: Binary not found at $BINARY"
-            exit 1
-          fi
-
-          echo "Binary size: $(du -h "$BINARY" | cut -f1)"
-          file "$BINARY"
-
-          # Rename to canonical name so tarball always extracts to ./komari-agent-c
-          cp "$BINARY" "output/komari-agent-c"
-          mkdir -p dist
-          tar -czf "dist/komari-agent-c-${VERSION}-linux-${GOARCH}.tar.gz" -C output komari-agent-c
-
-      - name: Upload binary artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: binary-linux-${{ matrix.goarch }}
-          path: dist/*
-          retention-days: 1
-
   build-luci:
     name: Build LuCI app
     runs-on: ubuntu-latest
@@ -163,13 +97,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-
-      - name: Sync version from git tag
-        if: github.ref_type == 'tag'
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          chmod +x scripts/update-version.sh
-          scripts/update-version.sh "$VERSION"
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y gcc-multilib
@@ -205,16 +132,16 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [build-openwrt, build-binaries, build-luci]
+    needs: [build-openwrt, build-luci]
     if: always() && (needs.build-openwrt.result == 'success' || needs.build-openwrt.result == 'skipped') && (needs.build-luci.result == 'success' || needs.build-luci.result == 'skipped')
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-        # Full history (including tags) is required so
-        # generate-release-notes.sh can resolve the previous release tag and
-        # produce a scoped changelog instead of falling back to HEAD.
+        # Full history (including tags) is required so GitHub's release notes
+        # generator can resolve the previous release tag and produce a scoped
+        # changelog instead of falling back to HEAD.
         with:
           fetch-depth: 0
 
@@ -223,14 +150,6 @@ jobs:
         uses: actions/download-artifact@v6
         with:
           pattern: packages-*
-          path: dist/
-          merge-multiple: true
-
-      - name: Download binary packages
-        if: needs.build-binaries.result == 'success'
-        uses: actions/download-artifact@v6
-        with:
-          pattern: binary-*
           path: dist/
           merge-multiple: true
 
@@ -251,20 +170,13 @@ jobs:
             echo "VERSION=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
           fi
 
-      - name: Generate release notes
-        run: |
-          VERSION="${{ steps.get_version.outputs.VERSION }}"
-          chmod +x scripts/generate-release-notes.sh
-          scripts/generate-release-notes.sh "$VERSION" "${{ github.repository }}"
-
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           name: Komari Agent v${{ steps.get_version.outputs.VERSION }}
-          body_path: release_notes.md
           files: dist/*
           draft: false
           prerelease: false
-          generate_release_notes: false
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

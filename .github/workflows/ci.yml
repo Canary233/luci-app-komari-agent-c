@@ -6,16 +6,12 @@ on:
     paths:
       - 'komari-agent-c/**'
       - 'luci-app-komari-agent-c/**'
-      - 'docker/**'
-      - 'scripts/**'
       - '.github/workflows/ci.yml'
   pull_request:
     branches: [main, develop]
     paths:
       - 'komari-agent-c/**'
       - 'luci-app-komari-agent-c/**'
-      - 'docker/**'
-      - 'scripts/**'
       - '.github/workflows/ci.yml'
   workflow_dispatch:
 
@@ -27,44 +23,8 @@ env:
   FEED_NAME: komari_ci
 
 jobs:
-  test-binary-build:
-    name: Test binary build on linux/${{ matrix.goarch }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        goarch: [amd64, arm64, arm, armv7, mipsel, mips64, riscv64, 386]
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Build binary in Docker
-        run: |
-          mkdir -p output
-          docker compose -f docker/docker-compose.yml run --rm build-${{ matrix.goarch }}
-
-      - name: Verify binary
-        run: |
-          BINARY="output/komari-agent-c-linux-${{ matrix.goarch }}"
-          if [ ! -f "$BINARY" ]; then
-            echo "Error: Binary not found at $BINARY"
-            exit 1
-          fi
-          echo "Binary size: $(du -h "$BINARY" | cut -f1)"
-          file "$BINARY"
-
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: test-binary-linux-${{ matrix.goarch }}
-          path: output/komari-agent-c-linux-${{ matrix.goarch }}
-          retention-days: 7
-
   test-openwrt-build:
     name: Test build on ${{ matrix.arch }} (${{ matrix.version }})
-    needs: test-binary-build
-    if: always()
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -144,8 +104,6 @@ jobs:
 
   test-luci-build:
     name: Test LuCI build on (${{ matrix.version }})
-    needs: test-binary-build
-    if: always()
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -230,27 +188,25 @@ jobs:
           python-version: '3.12'
 
       - name: Install lint tools
-        run: |
-          pip install codespell pyyaml
+        run: pip install codespell
 
       - name: Spell check
         run: |
-          codespell --skip=".git,*.po,*.ipk,*.apk,*.lmo,komari-agent-main" --ignore-words-list="ba,dne,nce,nam,ot,tht"
+          codespell --skip=".git,*.po,*.ipk,*.apk,*.lmo" --ignore-words-list="ba,dne,nce,nam,ot,tht"
 
       - name: Check shell scripts
         run: |
           set -e
           find . -name "*.sh" -exec bash -n {} \;
 
-      - name: Check YAML syntax
-        run: python scripts/verify_ci_config.py yaml
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake libssl-dev zlib1g-dev
 
-      - name: Verify CI config
-        run: python scripts/verify_ci_config.py config
-
-      - name: Run unit tests in Docker
+      - name: Build and run unit tests
+        working-directory: komari-agent-c
         run: |
-          mkdir -p output
-          docker compose -f docker/docker-compose.yml run --rm test
+          cmake -B build -DKOMARI_BUILD_TESTS=ON
+          cmake --build build -j"$(nproc)"
+          ctest --test-dir build --output-on-failure
 
 

@@ -21,9 +21,6 @@ obj/
 *.a
 *.so
 
-# Docker build output (multi-arch standalone binaries)
-output/
-
 # OpenWrt SDK package build output (CI workflow)
 package/
 bin/packages/
@@ -62,5 +59,5 @@ core.*
 coverage/
 *.gcda
 *.gcno
-tests/*.o
-tests/test_runner
+komari-agent-c/tests/*.o
+komari-agent-c/tests/test_runner

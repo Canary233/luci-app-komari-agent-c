@@ -65,6 +65,8 @@ fix(openwrt): 修复系统用户创建、procd 环境注入与令牌暴露
 
 ## 构建与测试
 
+以下命令在 `komari-agent-c/` 目录中执行（C 源码与 CMake 工程位于该目录）。
+
 ### 本地构建
 
 ```bash
@@ -84,25 +86,6 @@ cmake --preset default
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
-
-### Docker 环境运行测试
-
-无需本地安装工具链即可运行测试：
-
-```bash
-./scripts/docker-build.sh test
-```
-
-### 跨架构交叉编译
-
-支持 8 种 CPU 架构的 Docker 化交叉编译：
-
-```bash
-./scripts/docker-build.sh amd64    # 单架构
-./scripts/docker-build.sh all      # 全部架构
-```
-
-详见 [docker/README.md](docker/README.md)。
 
 ### CMake 预设
 
@@ -135,7 +118,7 @@ ctest --test-dir build --output-on-failure
 3. 本地通过构建与单元测试
 4. 提交 PR，标题遵循 Conventional Commits 格式（如 `fix(core): 修复 xxx`）
 5. 在 PR 描述中说明改动动机、影响范围与测试情况
-6. 等待 CI 检查（包含 8 架构 Docker 二进制构建、10 架构 OpenWrt 包构建、LuCI 包构建、代码质量检查）
+6. 等待 CI 检查（包含 10 架构 OpenWrt 包构建、LuCI 包构建、代码质量检查、单元测试）
 
 ## 项目结构
 
@@ -151,8 +134,6 @@ luci-app-komari-agent-c/
 │   ├── Makefile             # OpenWrt 包定义
 │   ├── CMakeLists.txt       # 顶层 CMake 配置
 │   └── CMakePresets.json    # 9 个标准化构建预设
-├── docker/                  # Docker 交叉编译环境
-├── scripts/                 # 构建/打包/验证脚本
 ├── .github/workflows/       # CI/CD 配置（ci.yml + release.yml）
 └── AGENTS.md                # 项目维护指南（内部文档）
 ```
