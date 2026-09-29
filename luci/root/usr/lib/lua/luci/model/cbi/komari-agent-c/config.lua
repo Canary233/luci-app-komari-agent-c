@@ -27,7 +27,7 @@ end
 
 local endpoint = s:option(Value, "endpoint", translate("Panel Server URL"), translate("URL of the Komari Monitor panel server (e.g., https://panel.example.com)"))
 endpoint.rmempty = false
-endpoint.datatype = "url"
+endpoint.datatype = "string"
 
 function endpoint.validate(self, value, section)
     if not value or value == "" then

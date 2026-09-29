@@ -188,8 +188,8 @@ function api_test_connection()
         return
     end
     local uci = require("luci.model.uci").cursor()
-    local endpoint = uci:get("komari-agent-c", "komari-agent-c", "endpoint") or ""
-    local ignore_cert = uci:get("komari-agent-c", "komari-agent-c", "ignore_unsafe_cert") or "0"
+    local endpoint = uci:get("komari-agent-c", "main", "endpoint") or ""
+    local ignore_cert = uci:get("komari-agent-c", "main", "ignore_unsafe_cert") or "0"
 
     if endpoint == "" then
         respond(1, "Endpoint not configured")
