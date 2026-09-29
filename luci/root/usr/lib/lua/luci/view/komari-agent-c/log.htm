@@ -108,10 +108,24 @@ Licensed under MIT License
     </div>
 </div>
 
+<style>
+#log-content {
+    background: #fff !important;
+    color: #000 !important;
+}
+#log-content pre {
+    background: transparent !important;
+    color: #000 !important;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+</style>
+
 <div class="cbi-section">
     <h3><%:Log Content%></h3>
     <div class="cbi-section-node">
-        <div id="log-content" style="background: #000; color: #fff; padding: 10px; max-height: 600px; overflow-y: auto; font-family: monospace;">
+        <div id="log-content" style="background: #fff !important; color: #000 !important; padding: 10px; max-height: 600px; overflow-y: auto; font-family: monospace; border: 1px solid #ccc; border-radius: 4px;">
             <p><%:Loading...%></p>
         </div>
     </div>
