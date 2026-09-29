@@ -64,6 +64,16 @@ typedef struct {
 int compress_raw_deflate_init(compress_raw_t *ctx);
 
 /**
+ * Reset a raw-DEFLATE compression context so the next message starts with
+ * an empty sliding window. Used when the peer negotiates
+ * client_no_context_takeover (RFC 7692 §7.1.1.1).
+ *
+ * @param ctx Context from compress_raw_deflate_init
+ * @return 0 on success, -1 on failure
+ */
+int compress_raw_deflate_reset(compress_raw_t *ctx);
+
+/**
  * Compress one message with Z_SYNC_FLUSH. The produced output ends with
  * the 00 00 FF FF sync-flush marker, which per RFC 7692 must be stripped
  * before the payload is sent on the wire; this function does NOT strip it
@@ -91,6 +101,16 @@ void compress_raw_deflate_end(compress_raw_t *ctx);
  * @return 0 on success, -1 on failure
  */
 int compress_raw_inflate_init(compress_raw_t *ctx);
+
+/**
+ * Reset a raw-DEFLATE decompression context so the next message starts with
+ * an empty sliding window. Used when the peer negotiates
+ * server_no_context_takeover (RFC 7692 §7.1.1.1).
+ *
+ * @param ctx Context from compress_raw_inflate_init
+ * @return 0 on success, -1 on failure
+ */
+int compress_raw_inflate_reset(compress_raw_t *ctx);
 
 /**
  * Decompress one message chunk group. The output grows until all input is

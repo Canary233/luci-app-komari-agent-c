@@ -502,12 +502,24 @@ static int ws_handshake(ws_client_t *client, const char *host, const char *path,
      * header named Sec-WebSocket-Extensions containing the extension token
      * enables it (client_offers check mirrors gorilla's Negotiate). */
     client->deflate_negotiated = false;
+    client->deflate_no_context_takeover = false;
+    client->inflate_no_context_takeover = false;
     if (!client->config.disable_compression) {
         char ext_hdr[512];
         if (ws_extract_header(response, "Sec-WebSocket-Extensions",
                               ext_hdr, sizeof(ext_hdr)) == 0 &&
             strstr(ext_hdr, "permessage-deflate") != NULL) {
             client->deflate_negotiated = true;
+            /* RFC 7692 §7.1.1.1: honour the server's context-takeover
+             * parameters. Cloudflare and several proxies answer with
+             * "client_no_context_takeover; server_no_context_takeover", in
+             * which case every message must use a fresh sliding window;
+             * carrying the context over produces a stream the peer cannot
+             * inflate and the connection is dropped after the second message. */
+            client->deflate_no_context_takeover =
+                strstr(ext_hdr, "client_no_context_takeover") != NULL;
+            client->inflate_no_context_takeover =
+                strstr(ext_hdr, "server_no_context_takeover") != NULL;
             compress_raw_deflate_init(&client->deflate_ctx);
             compress_raw_inflate_init(&client->inflate_ctx);
             KOMARI_LOG_INFO("[ws] permessage-deflate negotiated");
@@ -862,6 +874,9 @@ static void *ws_recv_thread(void *arg) {
         if (msg_rsv1 && msg_len > 0) {
             char *plain = NULL;
             size_t plain_len = 0;
+            if (client->inflate_no_context_takeover) {
+                compress_raw_inflate_reset(&client->inflate_ctx);
+            }
             if (compress_raw_inflate(&client->inflate_ctx, msg_data, msg_len,
                                      1, WS_FRAGMENT_MAX_SIZE,
                                      &plain, &plain_len) == 0 &&
@@ -912,7 +927,19 @@ static void *ws_recv_thread(void *arg) {
                          * internally) to avoid re-parsing the JSON string. */
                         ws_handle_v2_event(client, root);
                     } else {
-                        KOMARI_LOG_WARN("[ws] Ignoring non-JSON-RPC-2.0 message");
+                        cJSON *id = cJSON_GetObjectItem(root, "id");
+                        cJSON *result = cJSON_GetObjectItem(root, "result");
+                        cJSON *error = cJSON_GetObjectItem(root, "error");
+                        if (jsonrpc && cJSON_IsString(jsonrpc) &&
+                            strcmp(jsonrpc->valuestring, JSONRPC_VERSION) == 0 &&
+                            id && (result || error)) {
+                            /* Response to an agent-initiated request (e.g. the
+                             * agent.report request); nothing to dispatch. Log
+                             * at DEBUG so a healthy connection is not spammed. */
+                            KOMARI_LOG_DEBUG("[ws] Received JSON-RPC response");
+                        } else {
+                            KOMARI_LOG_WARN("[ws] Ignoring non-JSON-RPC-2.0 message");
+                        }
                         cJSON_Delete(root);
                     }
                 } else {
@@ -1644,6 +1671,9 @@ static int ws_deflate_message(ws_client_t *client, const char *data, size_t len,
                               char **out, size_t *out_len) {
     char *comp = NULL;
     size_t comp_len = 0;
+    if (client->deflate_no_context_takeover) {
+        compress_raw_deflate_reset(&client->deflate_ctx);
+    }
     if (compress_raw_deflate(&client->deflate_ctx, data, len, &comp, &comp_len) != 0) {
         return -1;
     }

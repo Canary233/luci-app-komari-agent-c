@@ -263,6 +263,12 @@ int compress_raw_deflate_init(compress_raw_t *ctx)
     return 0;
 }
 
+int compress_raw_deflate_reset(compress_raw_t *ctx)
+{
+    if (!ctx || !ctx->initialized) return -1;
+    return deflateReset(&ctx->strm) == Z_OK ? 0 : -1;
+}
+
 int compress_raw_deflate(compress_raw_t *ctx, const char *input,
                          size_t input_len, char **output, size_t *output_len)
 {
@@ -329,6 +335,12 @@ int compress_raw_inflate_init(compress_raw_t *ctx)
     }
     ctx->initialized = 1;
     return 0;
+}
+
+int compress_raw_inflate_reset(compress_raw_t *ctx)
+{
+    if (!ctx || !ctx->initialized) return -1;
+    return inflateReset(&ctx->strm) == Z_OK ? 0 : -1;
 }
 
 /* Feed one input region into inflate, growing the output buffer. */
