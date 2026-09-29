@@ -487,7 +487,7 @@ static int ws_handshake(ws_client_t *client, const char *host, const char *path,
      * (e.g., a transparent proxy returning a 101 with no real upgrade) could
      * trick the client into treating the stream as a WebSocket. */
     char server_accept[128];
-    if (ws_extract_header(response, "Sec-WebSocket-Accept:",
+    if (ws_extract_header(response, "Sec-WebSocket-Accept",
                           server_accept, sizeof(server_accept)) != 0) {
         KOMARI_LOG_WARN("WebSocket handshake missing Sec-WebSocket-Accept header");
         return -1;
@@ -504,7 +504,7 @@ static int ws_handshake(ws_client_t *client, const char *host, const char *path,
     client->deflate_negotiated = false;
     if (!client->config.disable_compression) {
         char ext_hdr[512];
-        if (ws_extract_header(response, "Sec-WebSocket-Extensions:",
+        if (ws_extract_header(response, "Sec-WebSocket-Extensions",
                               ext_hdr, sizeof(ext_hdr)) == 0 &&
             strstr(ext_hdr, "permessage-deflate") != NULL) {
             client->deflate_negotiated = true;
