@@ -174,7 +174,7 @@ docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' komari-agen
 
 ### "Read-only file system" errors
 
-This should not occur with the current configuration. The build uses out-of-source compilation (`cmake -B /tmp/komari-build -S /src`). If you see this error, ensure you are using the latest `build.sh`.
+This should not occur with the current configuration. The build uses out-of-source compilation (`cmake -B /tmp/komari-build -S /src/komari-agent-c`). If you see this error, ensure you are using the latest `build.sh`.
 
 ### Docker image not updating after code changes
 

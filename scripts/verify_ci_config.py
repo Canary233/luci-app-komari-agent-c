@@ -442,19 +442,19 @@ class CIConfigValidator:
 
         # Module files
         cmake_modules = [
-            "cmake/BuildOptions.cmake",
-            "cmake/Version.cmake",
-            "cmake/Platform.cmake",
-            "cmake/CompilerFlags.cmake",
-            "cmake/Dependencies.cmake",
-            "cmake/toolchain-openwrt.cmake",
+            "komari-agent-c/cmake/BuildOptions.cmake",
+            "komari-agent-c/cmake/Version.cmake",
+            "komari-agent-c/cmake/Platform.cmake",
+            "komari-agent-c/cmake/CompilerFlags.cmake",
+            "komari-agent-c/cmake/Dependencies.cmake",
+            "komari-agent-c/cmake/toolchain-openwrt.cmake",
         ]
         for rel_path in cmake_modules:
             self.check(f"{rel_path}: exists",
                        (self.repo_root / rel_path).exists())
 
         # CMakePresets.json
-        presets_path = self.repo_root / "CMakePresets.json"
+        presets_path = self.repo_root / "komari-agent-c/CMakePresets.json"
         if presets_path.exists():
             try:
                 with open(presets_path, "r", encoding="utf-8") as f:
@@ -489,7 +489,7 @@ class CIConfigValidator:
             self.check("CMakePresets.json: exists", False)
 
         # CMakeLists.txt references
-        content, err = self._read_file("CMakeLists.txt")
+        content, err = self._read_file("komari-agent-c/CMakeLists.txt")
         if not err:
             refs = {
                 "includes BuildOptions": "include(BuildOptions)" in content,
@@ -509,7 +509,7 @@ class CIConfigValidator:
         self.logger.info("--- OpenWrt Configuration Check ---")
 
         # OpenWrt Makefile
-        content, err = self._read_file("openwrt/Makefile")
+        content, err = self._read_file("komari-agent-c/Makefile")
         if not err:
             refs = {
                 "uses KOMARI_BUILD_SUBDIR": "KOMARI_BUILD_SUBDIR" in content,
@@ -518,37 +518,27 @@ class CIConfigValidator:
                 "defines Package/komari-agent-c": "Package/komari-agent-c" in content,
             }
             for name, ok in refs.items():
-                self.check(f"openwrt/Makefile: {name}", ok)
+                self.check(f"komari-agent-c/Makefile: {name}", ok)
         else:
-            self.check("openwrt/Makefile: readable for reference check", False, err)
+            self.check("komari-agent-c/Makefile: readable for reference check", False, err)
 
         # Required files
-        for rel_path in ("openwrt/files/komari-agent-c.config",
-                         "openwrt/files/komari-agent-c.init"):
+        for rel_path in ("komari-agent-c/files/komari-agent-c.config",
+                         "komari-agent-c/files/komari-agent-c.init",
+                         "komari-agent-c/files/komari-agent-c-migrate"):
             self.check(f"{rel_path}: exists",
                        (self.repo_root / rel_path).exists())
-
-        # PKG_SOURCE removal sed in workflows
-        for workflow in ("ci.yml", "release.yml"):
-            content, err = self._read_file(f".github/workflows/{workflow}")
-            if not err:
-                self.check(
-                    f"{workflow}: PKG_SOURCE removal sed",
-                    "PKG_SOURCE_PROTO:/d" in content,
-                )
-            else:
-                self.check(f"{workflow}: readable for PKG_SOURCE check", False, err)
 
         self.logger.info("")
 
     def _check_version_consistency(self):
-        """Verify version numbers are consistent across version.h, openwrt/Makefile, and luci/Makefile."""
+        """Verify version numbers are consistent across version.h, komari-agent-c/Makefile, and luci-app-komari-agent-c/Makefile."""
         self.logger.info("--- Version Consistency Check ---")
 
         versions = {}
 
-        # 1. include/komari-agent-c/version.h
-        version_h, err = self._read_file("include/komari-agent-c/version.h")
+        # 1. komari-agent-c/include/komari-agent-c/version.h
+        version_h, err = self._read_file("komari-agent-c/include/komari-agent-c/version.h")
         if not err:
             match = re.search(
                 r'#define\s+KOMARI_AGENT_C_VERSION_STRING\s+"([^"]+)"',
@@ -568,53 +558,41 @@ class CIConfigValidator:
         else:
             self.check("version.h: file exists", False)
 
-        # 2. openwrt/Makefile
-        openwrt_mk, err = self._read_file("openwrt/Makefile")
+        # 2. komari-agent-c/Makefile
+        openwrt_mk, err = self._read_file("komari-agent-c/Makefile")
         if not err:
             match = re.search(r"^PKG_VERSION:=(\S+)", openwrt_mk, re.MULTILINE)
             if match:
-                versions["openwrt/Makefile"] = match.group(1)
+                versions["komari-agent-c/Makefile"] = match.group(1)
                 self.check(
-                    "openwrt/Makefile: PKG_VERSION is defined",
+                    "komari-agent-c/Makefile: PKG_VERSION is defined",
                     True,
                 )
             else:
                 self.check(
-                    "openwrt/Makefile: PKG_VERSION is defined",
+                    "komari-agent-c/Makefile: PKG_VERSION is defined",
                     False,
                 )
-
-            # Also check PKG_SOURCE_VERSION matches v<version>
-            match_src = re.search(
-                r"^PKG_SOURCE_VERSION:=(\S+)", openwrt_mk, re.MULTILINE
-            )
-            if match_src and "openwrt/Makefile" in versions:
-                expected = f"v{versions['openwrt/Makefile']}"
-                self.check(
-                    f"openwrt/Makefile: PKG_SOURCE_VERSION matches v<version> "
-                    f"(expected {expected}, got {match_src.group(1)})",
-                    match_src.group(1) == expected,
-                )
         else:
-            self.check("openwrt/Makefile: file exists", False)
+            self.check("komari-agent-c/Makefile: file exists", False)
 
-        # 3. luci/Makefile
-        luci_mk, err = self._read_file("luci/Makefile")
+        # 3. luci-app-komari-agent-c/Makefile
+        luci_mk, err = self._read_file("luci-app-komari-agent-c/Makefile")
         if not err:
             match = re.search(r"^PKG_VERSION:=(\S+)", luci_mk, re.MULTILINE)
             if match:
-                versions["luci/Makefile"] = match.group(1)
+                versions["luci-app-komari-agent-c/Makefile"] = match.group(1)
                 self.check(
-                    "luci/Makefile: PKG_VERSION is defined",
+                    "luci-app-komari-agent-c/Makefile: PKG_VERSION is defined",
                     True,
                 )
             else:
                 self.check(
-                    "luci/Makefile: PKG_VERSION is defined",
+                    "luci-app-komari-agent-c/Makefile: PKG_VERSION is defined",
                     False,
                 )
         else:
-            self.check("luci/Makefile: file exists", False)
+            self.check("luci-app-komari-agent-c/Makefile: file exists", False)
 
         # 4. Cross-check consistency
         if len(versions) >= 2:

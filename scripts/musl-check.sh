@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
-INCLUDES="-Iinclude -Iinclude/komari-agent-c -Isrc -Isrc/vendor -Isrc/platform -Isrc/utils -Isrc/config -Isrc/network -Isrc/monitoring -Isrc/protocol -Isrc/report -Isrc/ping -Isrc/terminal -Isrc/core -Isrc/autodiscovery -Isrc/update"
+INCLUDES="-Ikomari-agent-c/include -Ikomari-agent-c/include/komari-agent-c -Ikomari-agent-c/src -Ikomari-agent-c/src/vendor -Ikomari-agent-c/src/platform -Ikomari-agent-c/src/utils -Ikomari-agent-c/src/config -Ikomari-agent-c/src/network -Ikomari-agent-c/src/monitoring -Ikomari-agent-c/src/protocol -Ikomari-agent-c/src/report -Ikomari-agent-c/src/ping -Ikomari-agent-c/src/terminal -Ikomari-agent-c/src/core -Ikomari-agent-c/src/autodiscovery -Ikomari-agent-c/src/update"
 CFLAGS="-std=c99 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Wall -Wextra"
 
 # Note: musl-gcc comes with musl libc headers, do not add -I/usr/include (would cause glibc/musl header conflicts)
@@ -22,7 +22,7 @@ echo ""
 FAILED=0
 TOTAL=0
 
-for f in $(find src/ -name "*.c" -not -path "src/vendor/*"); do
+for f in $(find komari-agent-c/src/ -name "*.c" -not -path "komari-agent-c/src/vendor/*"); do
     TOTAL=$((TOTAL + 1))
     if musl-gcc $CFLAGS $INCLUDES -c "$f" -o /dev/null 2>/dev/null; then
         echo "  OK: $f"

@@ -40,8 +40,8 @@ require_match() {
     fi
 }
 
-# ---- 1. include/komari-agent-c/version.h ----
-VERSION_H="$PROJECT_ROOT/include/komari-agent-c/version.h"
+# ---- 1. komari-agent-c/include/komari-agent-c/version.h ----
+VERSION_H="$PROJECT_ROOT/komari-agent-c/include/komari-agent-c/version.h"
 if [ -f "$VERSION_H" ]; then
     sed -i "s/^#define KOMARI_AGENT_C_VERSION_MAJOR[ \t]\+[0-9]\+/#define KOMARI_AGENT_C_VERSION_MAJOR $MAJOR/" "$VERSION_H"
     sed -i "s/^#define KOMARI_AGENT_C_VERSION_MINOR[ \t]\+[0-9]\+/#define KOMARI_AGENT_C_VERSION_MINOR $MINOR/" "$VERSION_H"
@@ -51,31 +51,29 @@ if [ -f "$VERSION_H" ]; then
     require_match "$VERSION_H" "^#define KOMARI_AGENT_C_VERSION_MINOR $MINOR\$" "version.h"
     require_match "$VERSION_H" "^#define KOMARI_AGENT_C_VERSION_PATCH $PATCH\$" "version.h"
     require_match "$VERSION_H" "^#define KOMARI_AGENT_C_VERSION_STRING \"$VERSION\"" "version.h"
-    echo "  [OK] include/komari-agent-c/version.h"
+    echo "  [OK] komari-agent-c/include/komari-agent-c/version.h"
 else
-    echo "  [WARN] include/komari-agent-c/version.h not found, skipping"
+    echo "  [WARN] komari-agent-c/include/komari-agent-c/version.h not found, skipping"
 fi
 
-# ---- 2. openwrt/Makefile ----
-OPENWRT_MK="$PROJECT_ROOT/openwrt/Makefile"
+# ---- 2. komari-agent-c/Makefile ----
+OPENWRT_MK="$PROJECT_ROOT/komari-agent-c/Makefile"
 if [ -f "$OPENWRT_MK" ]; then
     sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=$VERSION/" "$OPENWRT_MK"
-    sed -i "s/^PKG_SOURCE_VERSION:=.*/PKG_SOURCE_VERSION:=v$VERSION/" "$OPENWRT_MK"
-    require_match "$OPENWRT_MK" "^PKG_VERSION:=$VERSION\$" "openwrt/Makefile"
-    require_match "$OPENWRT_MK" "^PKG_SOURCE_VERSION:=v$VERSION\$" "openwrt/Makefile"
-    echo "  [OK] openwrt/Makefile"
+    require_match "$OPENWRT_MK" "^PKG_VERSION:=$VERSION\$" "komari-agent-c/Makefile"
+    echo "  [OK] komari-agent-c/Makefile"
 else
-    echo "  [WARN] openwrt/Makefile not found, skipping"
+    echo "  [WARN] komari-agent-c/Makefile not found, skipping"
 fi
 
-# ---- 3. luci/Makefile ----
-LUCI_MK="$PROJECT_ROOT/luci/Makefile"
+# ---- 3. luci-app-komari-agent-c/Makefile ----
+LUCI_MK="$PROJECT_ROOT/luci-app-komari-agent-c/Makefile"
 if [ -f "$LUCI_MK" ]; then
     sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=$VERSION/" "$LUCI_MK"
-    require_match "$LUCI_MK" "^PKG_VERSION:=$VERSION\$" "luci/Makefile"
-    echo "  [OK] luci/Makefile"
+    require_match "$LUCI_MK" "^PKG_VERSION:=$VERSION\$" "luci-app-komari-agent-c/Makefile"
+    echo "  [OK] luci-app-komari-agent-c/Makefile"
 else
-    echo "  [WARN] luci/Makefile not found, skipping"
+    echo "  [WARN] luci-app-komari-agent-c/Makefile not found, skipping"
 fi
 
 echo ""

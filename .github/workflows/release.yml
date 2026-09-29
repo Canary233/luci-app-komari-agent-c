@@ -51,20 +51,8 @@ jobs:
 
       - name: Prepare package
         run: |
-          mkdir -p package/${{ env.PACKAGE_NAME }}
-          cp -r src package/${{ env.PACKAGE_NAME }}/
-          cp -r include package/${{ env.PACKAGE_NAME }}/
-          cp -r cmake package/${{ env.PACKAGE_NAME }}/ 2>/dev/null || true
-          cp CMakeLists.txt package/${{ env.PACKAGE_NAME }}/
-          cp openwrt/Makefile package/${{ env.PACKAGE_NAME }}/Makefile
-
-          # Remove PKG_SOURCE_* lines so OpenWrt build system skips git download and hash check
-          # Build/Prepare in openwrt/Makefile copies local source files instead
-          sed -i '/^PKG_SOURCE_PROTO:/d; /^PKG_SOURCE_URL:/d; /^PKG_SOURCE_VERSION:/d' package/${{ env.PACKAGE_NAME }}/Makefile
-
-          mkdir -p package/${{ env.PACKAGE_NAME }}/files
-          cp openwrt/files/komari-agent-c.config package/${{ env.PACKAGE_NAME }}/files/
-          cp openwrt/files/komari-agent-c.init package/${{ env.PACKAGE_NAME }}/files/
+          mkdir -p package
+          cp -r komari-agent-c package/
 
       - name: Build
         uses: openwrt/gh-action-sdk@v11
@@ -188,23 +176,9 @@ jobs:
 
       - name: Prepare packages
         run: |
-          mkdir -p package/luci-app-komari-agent-c
-          cp -r luci/* package/luci-app-komari-agent-c/
-
-          mkdir -p package/${{ env.PACKAGE_NAME }}
-          cp -r src package/${{ env.PACKAGE_NAME }}/
-          cp -r include package/${{ env.PACKAGE_NAME }}/
-          cp -r cmake package/${{ env.PACKAGE_NAME }}/ 2>/dev/null || true
-          cp CMakeLists.txt package/${{ env.PACKAGE_NAME }}/
-          cp openwrt/Makefile package/${{ env.PACKAGE_NAME }}/Makefile
-
-          # Remove PKG_SOURCE_* lines so OpenWrt build system skips git download and hash check
-          # Build/Prepare in openwrt/Makefile copies local source files instead
-          sed -i '/^PKG_SOURCE_PROTO:/d; /^PKG_SOURCE_URL:/d; /^PKG_SOURCE_VERSION:/d' package/${{ env.PACKAGE_NAME }}/Makefile
-
-          mkdir -p package/${{ env.PACKAGE_NAME }}/files
-          cp openwrt/files/komari-agent-c.config package/${{ env.PACKAGE_NAME }}/files/
-          cp openwrt/files/komari-agent-c.init package/${{ env.PACKAGE_NAME }}/files/
+          mkdir -p package
+          cp -r luci-app-komari-agent-c package/
+          cp -r komari-agent-c package/
 
       - name: Build
         uses: openwrt/gh-action-sdk@v11

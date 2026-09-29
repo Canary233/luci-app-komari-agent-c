@@ -10,7 +10,7 @@
 # and can also be run manually for local OpenWrt cross-compilation tests.
 #
 # Usage:
-#   # Inside OpenWrt SDK (called by Build/Compile in openwrt/Makefile):
+#   # Inside OpenWrt SDK (called by Build/Compile in komari-agent-c/Makefile):
 #   #   environment variables TARGET_CC, STAGING_DIR, PKG_BUILD_DIR are set
 #   #   by the SDK; this script is NOT called directly in that case.
 #
@@ -21,7 +21,7 @@
 #   KOMARI_BUILD_SUBDIR=build-openwrt-custom ./scripts/openwrt-build.sh
 #
 # Environment variables:
-#   SRC_DIR             - source directory (default: parent of scripts/)
+#   SRC_DIR             - source directory (default: komari-agent-c/)
 #   KOMARI_BUILD_SUBDIR - CMake build subdirectory name (default: build-openwrt)
 #   KOMARI_BUILD_TYPE   - CMake build type (default: Release)
 #   EXTRA_CMAKE_ARGS    - extra CMake arguments (optional)
@@ -29,7 +29,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="${SRC_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+SRC_DIR="${SRC_DIR:-$(cd "${SCRIPT_DIR}/../komari-agent-c" && pwd)}"
 KOMARI_BUILD_SUBDIR="${KOMARI_BUILD_SUBDIR:-build-openwrt}"
 KOMARI_BUILD_TYPE="${KOMARI_BUILD_TYPE:-Release}"
 BUILD_DIR="${SRC_DIR}/${KOMARI_BUILD_SUBDIR}"

@@ -115,7 +115,10 @@ static const char *virt_detect_once(void) {
     /* systemd-detect-virt: report the raw output verbatim (trimmed), with
      * a small mapping for vendor names that differ from the C constants. */
     {
-        char raw[256];
+        /* static so virt_map_systemd_output() can safely return a pointer to
+         * the raw string (its pass-through branch) without dangling after
+         * this function returns. */
+        static char raw[256];
         if (virt_systemd_output(raw, sizeof(raw))) {
             const char *mapped = virt_map_systemd_output(raw);
             KOMARI_LOG_DEBUG("Virtualization detected via systemd-detect-virt: %s", mapped);

@@ -124,7 +124,7 @@ ctest --test-dir build --output-on-failure
 
 - 使用 [Unity](https://github.com/ThrowTheSwitch/Unity) v2.6.1 框架编写单元测试
 - 测试文件放置在 `tests/` 目录下，命名格式 `test_<module>.c`
-- `KOMARI_BUILD_TESTS` 与 `BUILD_TESTING` 两个 CMake 选项同步（见 `cmake/BuildOptions.cmake`）
+- `KOMARI_BUILD_TESTS` 与 `BUILD_TESTING` 两个 CMake 选项同步（见 `komari-agent-c/cmake/BuildOptions.cmake`）
 - 新增功能或修复 bug 时，应附上对应单元测试
 - 提交前确保 `ctest --test-dir build --output-on-failure` 全部通过
 
@@ -141,18 +141,20 @@ ctest --test-dir build --output-on-failure
 
 ```
 luci-app-komari-agent-c/
-├── cmake/                  # CMake 模块化配置（5 个模块）
-├── docker/                 # Docker 交叉编译环境
-├── include/                # 公共头文件（version.h 等）
-├── luci/                   # LuCI 前端（Lua + CBI）
-├── openwrt/                # OpenWrt 包定义（Makefile + init/config 文件）
-├── scripts/                # 构建/打包/验证脚本
-├── src/                    # C 源代码（按模块组织）
-├── tests/                  # Unity 单元测试
-├── .github/workflows/      # CI/CD 配置（ci.yml + release.yml）
-├── CMakeLists.txt          # 顶层 CMake 配置
-├── CMakePresets.json       # 9 个标准化构建预设
-└── AGENTS.md               # 项目维护指南（内部文档）
+├── luci-app-komari-agent-c/ # LuCI 前端（Lua + CBI）
+├── komari-agent-c/          # OpenWrt 后端包 + C 源代码
+│   ├── cmake/               # CMake 模块化配置（5 个模块）
+│   ├── include/             # 公共头文件（version.h 等）
+│   ├── src/                 # C 源代码（按模块组织）
+│   ├── tests/               # Unity 单元测试
+│   ├── files/               # OpenWrt init/config 文件
+│   ├── Makefile             # OpenWrt 包定义
+│   ├── CMakeLists.txt       # 顶层 CMake 配置
+│   └── CMakePresets.json    # 9 个标准化构建预设
+├── docker/                  # Docker 交叉编译环境
+├── scripts/                 # 构建/打包/验证脚本
+├── .github/workflows/       # CI/CD 配置（ci.yml + release.yml）
+└── AGENTS.md                # 项目维护指南（内部文档）
 ```
 
 ## 联系方式

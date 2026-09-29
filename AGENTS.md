@@ -7,7 +7,7 @@
 ## 技术栈
 
 - **语言**：C (C99)
-- **构建系统**：CMake（模块化配置，见 `cmake/` 目录）
+- **构建系统**：CMake（模块化配置，见 `komari-agent-c/cmake/` 目录）
 - **CI/CD**：GitHub Actions（`ci.yml` + `release.yml`）
 - **目标平台**：Linux、OpenWrt、8 种 CPU 架构
 - **前端界面**：LuCI（Lua + CBI 框架，支持中英文 i18n）
@@ -76,7 +76,7 @@ fix(core): 修复死配置、堆栈溢出与阻塞风险等跨模块问题
 
 - 使用 Unity 框架编写单元测试
 - 测试文件放置在 `tests/` 目录下
-- `KOMARI_BUILD_TESTS` 与 `BUILD_TESTING` 两个选项同步（见 `cmake/BuildOptions.cmake`）
+- `KOMARI_BUILD_TESTS` 与 `BUILD_TESTING` 两个选项同步（见 `komari-agent-c/cmake/BuildOptions.cmake`）
 - 运行测试：`cmake -B build -DKOMARI_BUILD_TESTS=ON && cmake --build build && ctest --test-dir build --output-on-failure`
 - Docker 环境运行测试：`./scripts/docker-build.sh test`——这是单元测试唯一的标准执行环境（CI 中由 `lint` job 的 `docker compose run --rm test` 执行），宿主机直连构建仅用于配置/语法检查
 
@@ -94,7 +94,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build
 
 #### CMake 预设
 
-项目提供 9 个标准化预设（见 `CMakePresets.json`）：
+项目提供 9 个标准化预设（见 `komari-agent-c/CMakePresets.json`）：
 
 ```bash
 cmake --preset default      # 默认 Release + 测试
@@ -214,23 +214,25 @@ cmake -B build -DBUILD_TESTING=ON && cmake --build build && ctest --test-dir bui
 
 ```
 luci-app-komari-agent-c/
-├── cmake/                  # CMake 模块化配置（5 个模块）
-├── docker/                 # Docker 交叉编译环境
-├── include/                # 公共头文件（version.h 等）
-├── luci/                   # LuCI 前端（Lua + CBI）
-├── openwrt/                # OpenWrt 包定义（Makefile + init/config 文件）
+├── luci-app-komari-agent-c/ # LuCI 前端（Lua + CBI）
+├── komari-agent-c/          # OpenWrt 后端包 + C 源代码
+│   ├── cmake/               # CMake 模块化配置（5 个模块）
+│   ├── include/             # 公共头文件（version.h 等）
+│   ├── src/                 # C 源代码（按模块组织）
+│   ├── tests/               # Unity 单元测试
+│   ├── files/               # OpenWrt init/config 文件
+│   ├── Makefile             # OpenWrt 包定义
+│   ├── CMakeLists.txt       # 顶层 CMake 配置
+│   └── CMakePresets.json    # 9 个标准化构建预设
+├── docker/                  # Docker 交叉编译环境
 ├── scripts/                # 构建/测试/发布/版本管理脚本（10 个）+ ipkg/ 模板目录
-├── src/                    # C 源代码（按模块组织）
-├── tests/                  # Unity 单元测试
-├── .github/workflows/      # CI/CD 配置（ci.yml + release.yml）
-├── CMakeLists.txt          # 顶层 CMake 配置
-├── CMakePresets.json       # 9 个标准化构建预设
-└── AGENTS.md               # 本文件
+├── .github/workflows/       # CI/CD 配置（ci.yml + release.yml）
+└── AGENTS.md                # 本文件
 ```
 
 ## CMake 模块化配置
 
-`cmake/` 目录包含 5 个模块，按特定顺序加载：
+`komari-agent-c/cmake/` 目录包含 5 个模块，按特定顺序加载：
 
 1. **BuildOptions.cmake** — 构建选项定义（在 `project()` 之前加载）
 2. **Version.cmake** — 从 `version.h` 解析版本号（在 `project()` 之前加载）
@@ -238,7 +240,7 @@ luci-app-komari-agent-c/
 4. **CompilerFlags.cmake** — 警告/安全/LTO 编译标志（在 Platform 之后加载）
 5. **Dependencies.cmake** — OpenSSL/ZLIB/Threads 依赖检测（在 CompilerFlags 之后加载）
 
-另外 `cmake/toolchain-openwrt.cmake` 是 OpenWrt 交叉编译工具链文件。
+另外 `komari-agent-c/cmake/toolchain-openwrt.cmake` 是 OpenWrt 交叉编译工具链文件。
 
 ### 关键构建选项
 
@@ -319,11 +321,11 @@ Dependabot 自动管理依赖版本更新，每周一检查：
 
 ## LuCI 前端
 
-LuCI 前端位于 `luci/` 目录，提供 Web 配置界面：
+LuCI 前端位于 `luci-app-komari-agent-c/` 目录，提供 Web 配置界面：
 
 - **3 个标签页**：配置（CBI 表单）、状态（实时仪表板）、日志（日志查看器）
 - **6 个后端 JSON API**：status、start、stop、restart、test_connection、log
-- **状态数据契约**：agent 每个上报周期将连接状态与实时指标原子写入 `/tmp/komari-agent-c-status.json`（路径常量见 `src/platform/paths.h`），断连时写入 `connected: false`；状态页与 `api_get_status` 据此展示
+- **状态数据契约**：agent 每个上报周期将连接状态与实时指标原子写入 `/tmp/komari-agent-c-status.json`（路径常量见 `komari-agent-c/src/platform/paths.h`），断连时写入 `connected: false`；状态页与 `api_get_status` 据此展示
 - **变更类 API 约定**：start/stop/restart/test_connection 必须为 POST 并校验 CSRF 令牌，视图以携带令牌的 POST 请求调用；新增变更类端点必须遵循同一模式
 - **i18n 支持**：中文（zh_Hans）翻译，`.po` → `.lmo` 编译
 - **ACL 权限**：通过 `luci-app-komari-agent-c` ACL 定义控制访问
@@ -333,15 +335,15 @@ LuCI 前端位于 `luci/` 目录，提供 Web 配置界面：
 
 以下三处版本号必须与主项目版本保持一致，由 `scripts/update-version.sh` 统一更新：
 
-1. `include/komari-agent-c/version.h` — `KOMARI_AGENT_C_VERSION_*` 宏
-2. `openwrt/Makefile` — `PKG_VERSION` 与 `PKG_SOURCE_VERSION`（新 tag 推送后两者应一致）
-3. `luci/Makefile` — `PKG_VERSION`
+1. `komari-agent-c/include/komari-agent-c/version.h` — `KOMARI_AGENT_C_VERSION_*` 宏
+2. `komari-agent-c/Makefile` — `PKG_VERSION`
+3. `luci-app-komari-agent-c/Makefile` — `PKG_VERSION`
 
 发布新版本时，通过 `scripts/update-version.sh <version>` 一次性同步所有位置。
 
 ### OpenWrt 服务（procd）
 
-`openwrt/files/komari-agent-c.init` 的维护注意事项：
+`komari-agent-c/files/komari-agent-c.init` 的维护注意事项：
 
 - **env 必须单次注入**：`procd_set_param env KEY=VAL` 每调用一次都会整体替换 env 表、仅最后一对生效，所有代理环境变量以 `set --` 拼装后在同一次调用中传入（或改用 `procd_append_param env`）。
 - **令牌走环境变量**：面板令牌经 `AGENT_TOKEN` 环境变量传递，不使用 `--token` 命令行参数——`/proc/<pid>/cmdline` 全局可读，`/proc/<pid>/environ` 仅属主可读。

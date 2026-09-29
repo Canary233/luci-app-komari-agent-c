@@ -124,7 +124,7 @@ The project provides 9 standardized presets (see `CMakePresets.json`):
 
 - Use the [Unity](https://github.com/ThrowTheSwitch/Unity) v2.6.1 framework for unit tests
 - Test files go in the `tests/` directory, named `test_<module>.c`
-- `KOMARI_BUILD_TESTS` and `BUILD_TESTING` CMake options are kept in sync (see `cmake/BuildOptions.cmake`)
+- `KOMARI_BUILD_TESTS` and `BUILD_TESTING` CMake options are kept in sync (see `komari-agent-c/cmake/BuildOptions.cmake`)
 - Attach corresponding unit tests when adding features or fixing bugs
 - Ensure `ctest --test-dir build --output-on-failure` passes before submitting
 
@@ -141,18 +141,20 @@ The project provides 9 standardized presets (see `CMakePresets.json`):
 
 ```
 luci-app-komari-agent-c/
-├── cmake/                  # Modular CMake configuration (5 modules)
-├── docker/                 # Docker cross-compile environment
-├── include/                # Public headers (version.h, etc.)
-├── luci/                   # LuCI frontend (Lua + CBI)
-├── openwrt/                # OpenWrt package definitions (Makefile + init/config)
-├── scripts/                # Build/package/verify scripts
-├── src/                    # C source code (organized by module)
-├── tests/                  # Unity unit tests
-├── .github/workflows/      # CI/CD configuration (ci.yml + release.yml)
-├── CMakeLists.txt          # Top-level CMake configuration
-├── CMakePresets.json       # 9 standardized build presets
-└── AGENTS.md               # Project maintenance guide (internal)
+├── luci-app-komari-agent-c/ # LuCI frontend (Lua + CBI)
+├── komari-agent-c/          # OpenWrt backend package + C source code
+│   ├── cmake/               # Modular CMake configuration (5 modules)
+│   ├── include/             # Public headers (version.h, etc.)
+│   ├── src/                 # C source code (organized by module)
+│   ├── tests/               # Unity unit tests
+│   ├── files/               # OpenWrt init/config files
+│   ├── Makefile             # OpenWrt package definition
+│   ├── CMakeLists.txt       # Top-level CMake configuration
+│   └── CMakePresets.json    # 9 standardized build presets
+├── docker/                  # Docker cross-compile environment
+├── scripts/                 # Build/package/verify scripts
+├── .github/workflows/       # CI/CD configuration (ci.yml + release.yml)
+└── AGENTS.md                # Project maintenance guide (internal)
 ```
 
 ## Contact

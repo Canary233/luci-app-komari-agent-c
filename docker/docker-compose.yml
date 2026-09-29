@@ -28,7 +28,7 @@ services:
       - MULTIARCH_TRIPLET=x86_64-linux-gnu
       - CC=gcc
       - OUTPUT_DIR=/output
-      - SRC_DIR=/src
+      - SRC_DIR=/src/komari-agent-c
     volumes:
       - ..:/src:ro
       - ../output:/output
@@ -51,7 +51,7 @@ services:
       - MULTIARCH_TRIPLET=aarch64-linux-gnu
       - CC=aarch64-linux-gnu-gcc
       - OUTPUT_DIR=/output
-      - SRC_DIR=/src
+      - SRC_DIR=/src/komari-agent-c
     volumes:
       - ..:/src:ro
       - ../output:/output
@@ -74,7 +74,7 @@ services:
       - MULTIARCH_TRIPLET=arm-linux-gnueabi
       - CC=arm-linux-gnueabi-gcc
       - OUTPUT_DIR=/output
-      - SRC_DIR=/src
+      - SRC_DIR=/src/komari-agent-c
     volumes:
       - ..:/src:ro
       - ../output:/output
@@ -97,7 +97,7 @@ services:
       - MULTIARCH_TRIPLET=arm-linux-gnueabihf
       - CC=arm-linux-gnueabihf-gcc
       - OUTPUT_DIR=/output
-      - SRC_DIR=/src
+      - SRC_DIR=/src/komari-agent-c
     volumes:
       - ..:/src:ro
       - ../output:/output
@@ -120,7 +120,7 @@ services:
       - MULTIARCH_TRIPLET=mipsel-linux-gnu
       - CC=mipsel-linux-gnu-gcc
       - OUTPUT_DIR=/output
-      - SRC_DIR=/src
+      - SRC_DIR=/src/komari-agent-c
     volumes:
       - ..:/src:ro
       - ../output:/output
@@ -143,7 +143,7 @@ services:
       - MULTIARCH_TRIPLET=mips64el-linux-gnuabi64
       - CC=mips64el-linux-gnuabi64-gcc
       - OUTPUT_DIR=/output
-      - SRC_DIR=/src
+      - SRC_DIR=/src/komari-agent-c
     volumes:
       - ..:/src:ro
       - ../output:/output
@@ -166,7 +166,7 @@ services:
       - MULTIARCH_TRIPLET=riscv64-linux-gnu
       - CC=riscv64-linux-gnu-gcc
       - OUTPUT_DIR=/output
-      - SRC_DIR=/src
+      - SRC_DIR=/src/komari-agent-c
     volumes:
       - ..:/src:ro
       - ../output:/output
@@ -189,7 +189,7 @@ services:
       - MULTIARCH_TRIPLET=i386-linux-gnu
       - CC=i686-linux-gnu-gcc
       - OUTPUT_DIR=/output
-      - SRC_DIR=/src
+      - SRC_DIR=/src/komari-agent-c
     volumes:
       - ..:/src:ro
       - ../output:/output
@@ -211,7 +211,7 @@ services:
     environment:
       - CC=gcc
       - OUTPUT_DIR=/output
-      - SRC_DIR=/src
+      - SRC_DIR=/src/komari-agent-c
     volumes:
       - ..:/src:ro
       - ../output:/output

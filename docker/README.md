@@ -172,7 +172,7 @@ docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' komari-agen
 
 ### 出现 "Read-only file system" 错误
 
-当前配置使用外部源码编译（`cmake -B /tmp/komari-build -S /src`），不应出现此错误。如仍遇到，请确认使用的是最新版 `build.sh`。
+当前配置使用外部源码编译（`cmake -B /tmp/komari-build -S /src/komari-agent-c`），不应出现此错误。如仍遇到，请确认使用的是最新版 `build.sh`。
 
 ### 代码修改后 Docker 镜像未更新
 
