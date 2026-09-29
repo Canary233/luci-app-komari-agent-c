@@ -1,0 +1,12 @@
+#!/bin/sh
+# Migrate the legacy UCI section name. UCI does not allow hyphens in a
+# section *name*, so the original 'komari-agent-c' name made the whole
+# config file unparseable. Rename it to 'main' in place.
+[ -f /etc/config/komari-agent-c ] || exit 0
+
+if grep -q "^config komari-agent-c 'komari-agent-c'" /etc/config/komari-agent-c; then
+	sed -i "s/^config komari-agent-c 'komari-agent-c'/config komari-agent-c 'main'/" \
+		/etc/config/komari-agent-c
+fi
+
+exit 0

@@ -93,6 +93,9 @@ define Package/komari-agent-c/install
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/komari-agent-c.config $(1)/etc/config/komari-agent-c
+
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./files/komari-agent-c-migrate $(1)/etc/uci-defaults/99-komari-agent-c-migrate
 endef
 
 define Package/komari-agent-c/postinst

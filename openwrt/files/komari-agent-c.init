@@ -8,17 +8,17 @@ PROG=/usr/bin/komari-agent-c
 NAME=komari-agent-c
 
 validate_section() {
-	uci_load_validate "$NAME" "$NAME" "$1" "$2" \
+	uci_load_validate "$NAME" "$NAME" "main" "$2" \
 		'token:string' \
 		'endpoint:string' \
 		'interval:float:3.0' \
 		'custom_dns:string' \
 		'ignore_unsafe_cert:bool:0' \
 		'disable_web_ssh:bool:0' \
-		'max_retries:int:3' \
-		'reconnect_interval:int:5' \
-		'info_report_interval:int:5' \
-		'month_rotate:int:0' \
+		'max_retries:uinteger:3' \
+		'reconnect_interval:uinteger:5' \
+		'info_report_interval:uinteger:5' \
+		'month_rotate:uinteger:0' \
 		'include_nics:string' \
 		'exclude_nics:string' \
 		'include_mountpoints:string' \
@@ -33,12 +33,6 @@ validate_section() {
 }
 
 start_instance() {
-	local token endpoint interval custom_dns ignore_unsafe_cert
-	local disable_web_ssh max_retries reconnect_interval info_report_interval
-	local month_rotate include_nics exclude_nics include_mountpoints
-	local custom_ipv4 custom_ipv6 memory_include_cache memory_report_raw_used
-	local prefer_ip_version auto_discovery_key disable_compression disable_auto_update
-
 	[ "$2" = "0" ] || {
 		echo "Validation failed"
 		return 1
