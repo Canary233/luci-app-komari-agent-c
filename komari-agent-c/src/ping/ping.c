@@ -389,14 +389,23 @@ int ping_task_tcp(const char *target, int timeout_ms, const char *custom_dns) {
         }
     }
 
-    /* Split host:port first so the host part can be resolved correctly.
-       Use strrchr to locate the last colon, which avoids mistaking the
-       colons inside a literal IPv6 address for the port separator. For
-       bracketed IPv6 literals such as "[::1]:80", strrchr lands on the
-       port separator after the closing bracket (T10.3). */
+    /* Split host:port. For a bracketed IPv6 literal the port separator, if
+     * any, follows the closing ']' (e.g. "[::1]:80"); strrchr() cannot be
+     * used there because it would land on a colon inside the address and
+     * truncate the host. For non-bracketed targets a single colon is the
+     * separator and multiple colons mean a bare IPv6 literal (no port). */
     char host[256];
     char port_str[8] = "80";
-    const char *colon = strrchr(effective_target, ':');
+    const char *colon = NULL;
+    const char *bracket_close = (effective_target[0] == '[')
+                            ? strchr(effective_target, ']') : NULL;
+    if (bracket_close) {
+        if (bracket_close[1] == ':') colon = bracket_close + 1;
+    } else if (effective_target[0] != '[') {
+        const char *first = strchr(effective_target, ':');
+        const char *last = strrchr(effective_target, ':');
+        if (first && first == last) colon = last;
+    }
     if (colon) {
         size_t host_len = (size_t)(colon - effective_target);
         if (host_len >= sizeof(host)) host_len = sizeof(host) - 1;

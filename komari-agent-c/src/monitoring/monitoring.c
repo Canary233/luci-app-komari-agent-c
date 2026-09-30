@@ -367,9 +367,11 @@ int monitoring_get_mem_swap_info(bool memory_include_cache, mem_info_t *mem, mem
     if (!fp) return -1;
 
     char line[256];
-    unsigned long mem_total = 0, mem_free = 0, mem_available = 0;
-    unsigned long buffers = 0, cached = 0, shmem = 0, sreclaimable = 0;
-    unsigned long swap_total = 0, swap_free = 0, swap_cached = 0;
+    /* Accumulate in 64-bit: on 32-bit targets `value * 1024` overflows for
+     * memories >= 4 GiB (and the sums below can overflow too). */
+    uint64_t mem_total = 0, mem_free = 0, mem_available = 0;
+    uint64_t buffers = 0, cached = 0, shmem = 0, sreclaimable = 0;
+    uint64_t swap_total = 0, swap_free = 0, swap_cached = 0;
 
     while (fgets(line, sizeof(line), fp)) {
         unsigned long value;
@@ -377,25 +379,25 @@ int monitoring_get_mem_swap_info(bool memory_include_cache, mem_info_t *mem, mem
 
         if (sscanf(line, "%63[^:]: %lu", key, &value) == 2) {
             if (strcmp(key, "MemTotal") == 0) {
-                mem_total = value * 1024;
+                mem_total = (uint64_t)value * 1024;
             } else if (strcmp(key, "MemFree") == 0) {
-                mem_free = value * 1024;
+                mem_free = (uint64_t)value * 1024;
             } else if (strcmp(key, "MemAvailable") == 0) {
-                mem_available = value * 1024;
+                mem_available = (uint64_t)value * 1024;
             } else if (strcmp(key, "Buffers") == 0) {
-                buffers = value * 1024;
+                buffers = (uint64_t)value * 1024;
             } else if (strcmp(key, "Cached") == 0) {
-                cached = value * 1024;
+                cached = (uint64_t)value * 1024;
             } else if (strcmp(key, "Shmem") == 0) {
-                shmem = value * 1024;
+                shmem = (uint64_t)value * 1024;
             } else if (strcmp(key, "SReclaimable") == 0) {
-                sreclaimable = value * 1024;
+                sreclaimable = (uint64_t)value * 1024;
             } else if (strcmp(key, "SwapTotal") == 0) {
-                swap_total = value * 1024;
+                swap_total = (uint64_t)value * 1024;
             } else if (strcmp(key, "SwapFree") == 0) {
-                swap_free = value * 1024;
+                swap_free = (uint64_t)value * 1024;
             } else if (strcmp(key, "SwapCached") == 0) {
-                swap_cached = value * 1024;
+                swap_cached = (uint64_t)value * 1024;
             }
         }
     }
@@ -420,8 +422,8 @@ int monitoring_get_mem_swap_info(bool memory_include_cache, mem_info_t *mem, mem
              * the same formula on Linux (the Go flag only forces the htop
              * path on non-Linux or when /proc is unreadable), so no extra
              * branch is needed here. */
-            unsigned long used_diff = mem_free + cached + sreclaimable + buffers;
-            unsigned long used = (mem_total >= used_diff)
+            uint64_t used_diff = mem_free + cached + sreclaimable + buffers;
+            uint64_t used = (mem_total >= used_diff)
                                      ? mem_total - used_diff
                                      : mem_total - mem_free;
             mem->used = used + shmem;
@@ -433,7 +435,7 @@ int monitoring_get_mem_swap_info(bool memory_include_cache, mem_info_t *mem, mem
         swap->free = swap_free;
         /* Go mem.go Swap(): used = total - free - SwapCached with an
          * underflow guard falling back to total - free. */
-        unsigned long deductions = swap_free + swap_cached;
+        uint64_t deductions = swap_free + swap_cached;
         swap->used = (swap_total >= deductions) ? swap_total - deductions
                                                 : swap_total - swap_free;
     }
@@ -599,6 +601,10 @@ int monitoring_get_disk_info(disk_info_t *info) {
     char device[256], mountpoint[256], fstype[64], opts[256];
 
     while (fgets(line, sizeof(line), fp)) {
+        /* Clear opts each line: sscanf only fills it when the mount-options
+         * field is present, and is_physical_mount() would otherwise read a
+         * stale value (or uninitialized memory on the first short line). */
+        opts[0] = '\0';
         if (sscanf(line, "%255s %255s %63s %255s", device, mountpoint,
                    fstype, opts) < 3) {
             continue;

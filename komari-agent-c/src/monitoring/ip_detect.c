@@ -84,12 +84,24 @@ static int ip_url_parse(const char *url, ip_url_t *out) {
     p += 3;
 
     const char *path_start = strchr(p, '/');
-    if (path_start) {
-        size_t hlen = (size_t)(path_start - p);
+    const char *query_start = strchr(p, '?');
+    const char *frag_start = strchr(p, '#');
+    const char *host_end = path_start;
+    if (!host_end || (query_start && query_start < host_end)) host_end = query_start;
+    if (!host_end || (frag_start && frag_start < host_end)) host_end = frag_start;
+    if (host_end) {
+        size_t hlen = (size_t)(host_end - p);
         if (hlen == 0 || hlen >= sizeof(out->host)) return -1;
         memcpy(out->host, p, hlen);
         out->host[hlen] = '\0';
-        snprintf(out->path, sizeof(out->path), "%s", path_start);
+        if (*host_end == '/') {
+            snprintf(out->path, sizeof(out->path), "%s", host_end);
+        } else {
+            /* Query/fragment with no path component: prepend '/' so the
+             * request line stays valid ("GET /?x HTTP/1.1"). Previously the
+             * query was folded into the host and getaddrinfo() failed. */
+            snprintf(out->path, sizeof(out->path), "/%s", host_end);
+        }
     } else {
         snprintf(out->host, sizeof(out->host), "%s", p);
         strcpy(out->path, "/");
