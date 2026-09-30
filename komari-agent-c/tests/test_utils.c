@@ -95,6 +95,31 @@ void test_utils_format_timestamp(void) {
 /* komari_strerror must return non-NULL, human-readable strings for every
  * documented error code and a fallback for unknown values. The returned
  * pointers must be static (safe to compare by address). */
+/* Execute a command through the argv path (no stdin) and verify output. */
+void test_utils_exec_command_argv(void) {
+    char out[256];
+    int rc = -1;
+    char *argv[] = { "echo", "hello_argv", NULL };
+    TEST_ASSERT_EQUAL_INT(0, utils_exec_command_argv(argv, out, sizeof(out), &rc));
+    TEST_ASSERT_EQUAL_INT(0, rc);
+    TEST_ASSERT_NOT_NULL(strstr(out, "hello_argv"));
+}
+
+/* Regression test for the "sh -s" remote-exec path: the child's stdin pipe
+ * must be created before fork() so the command text actually reaches the
+ * shell. Before the fix the parent and child each got a private pipe, the
+ * shell saw EOF immediately, and the output was empty. */
+void test_utils_exec_command_argv_stdin(void) {
+    char out[256];
+    int rc = -1;
+    char *argv[] = { "sh", "-s", NULL };
+    const char *cmd = "echo hello_from_stdin\n";
+    TEST_ASSERT_EQUAL_INT(0, utils_exec_command_argv_stdin(
+        argv, cmd, strlen(cmd), out, sizeof(out), &rc));
+    TEST_ASSERT_EQUAL_INT(0, rc);
+    TEST_ASSERT_NOT_NULL(strstr(out, "hello_from_stdin"));
+}
+
 void test_utils_komari_strerror(void) {
     TEST_ASSERT_EQUAL_STRING("success", komari_strerror(KOMARI_OK));
     TEST_ASSERT_EQUAL_STRING("invalid argument", komari_strerror(KOMARI_ERR_INVALID_ARG));
@@ -121,6 +146,8 @@ int main(void) {
     RUN_TEST(test_utils_file_exists);
     RUN_TEST(test_utils_get_current_timestamp);
     RUN_TEST(test_utils_format_timestamp);
+    RUN_TEST(test_utils_exec_command_argv);
+    RUN_TEST(test_utils_exec_command_argv_stdin);
     RUN_TEST(test_utils_komari_strerror);
 
     return UNITY_END();
