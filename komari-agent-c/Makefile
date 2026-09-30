@@ -63,12 +63,12 @@ endef
 
 define Build/Compile
 	cd $(PKG_BUILD_DIR) && \
-		TARGET_CC=$(TARGET_CC) \
-		STAGING_DIR=$(STAGING_DIR) \
-		ARCH=$(ARCH) \
+		TARGET_CC="$(TARGET_CC)" \
+		STAGING_DIR="$(STAGING_DIR)" \
+		ARCH="$(ARCH)" \
 		TARGET_CFLAGS="$(TARGET_CFLAGS)" \
 		TARGET_LDFLAGS="$(TARGET_LDFLAGS)" \
-		$(if $(TARGET_CXX),TARGET_CXX=$(TARGET_CXX)) \
+		$(if $(TARGET_CXX),TARGET_CXX="$(TARGET_CXX)") \
 		cmake \
 			-DCMAKE_TOOLCHAIN_FILE=$(PKG_BUILD_DIR)/cmake/toolchain-openwrt.cmake \
 			-DCMAKE_BUILD_TYPE=Release \

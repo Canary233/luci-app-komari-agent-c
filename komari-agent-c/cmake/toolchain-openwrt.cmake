@@ -35,6 +35,36 @@ if(NOT DEFINED ENV{STAGING_DIR})
 endif()
 
 # ---------------------------------------------------------------------------
+# Compiler command-line parsing
+# ---------------------------------------------------------------------------
+# OpenWrt exports TARGET_CC/TARGET_CXX as command lines that may embed a
+# launcher such as ccache when CONFIG_CCACHE is enabled, e.g.
+#   TARGET_CC="ccache x86_64-openwrt-linux-musl-gcc"
+# CMake requires CMAKE_<LANG>_COMPILER to be a single executable path, so split
+# the command line: the trailing token is the compiler and any leading tokens
+# become the compiler launcher (CMAKE_<LANG>_COMPILER_LAUNCHER).
+function(_komari_split_toolchain_cmd _cmd _exe_out _launcher_out)
+    separate_arguments(_args UNIX_COMMAND "${_cmd}")
+    list(LENGTH _args _n)
+    if(_n EQUAL 0)
+        set(${_exe_out} "" PARENT_SCOPE)
+        set(${_launcher_out} "" PARENT_SCOPE)
+        return()
+    endif()
+    math(EXPR _last "${_n} - 1")
+    list(GET _args ${_last} _exe)
+    list(REMOVE_AT _args ${_last})
+    set(${_exe_out} "${_exe}" PARENT_SCOPE)
+    set(${_launcher_out} "${_args}" PARENT_SCOPE)
+endfunction()
+
+_komari_split_toolchain_cmd("$ENV{TARGET_CC}" _openwrt_cc_exe _openwrt_cc_launcher)
+
+if(DEFINED ENV{TARGET_CXX} AND NOT "$ENV{TARGET_CXX}" STREQUAL "")
+    _komari_split_toolchain_cmd("$ENV{TARGET_CXX}" _openwrt_cxx_exe _openwrt_cxx_launcher)
+endif()
+
+# ---------------------------------------------------------------------------
 # System identification
 # ---------------------------------------------------------------------------
 set(CMAKE_SYSTEM_NAME       Linux)
@@ -44,7 +74,7 @@ set(CMAKE_SYSTEM_PROCESSOR  "$ENV{ARCH}" CACHE STRING "Target processor")
 # ARCH is not exported by the OpenWrt SDK env.
 if(NOT CMAKE_SYSTEM_PROCESSOR OR CMAKE_SYSTEM_PROCESSOR STREQUAL "")
     execute_process(
-        COMMAND "$ENV{TARGET_CC}" -dumpmachine
+        COMMAND "${_openwrt_cc_exe}" -dumpmachine
         OUTPUT_VARIABLE _openwrt_triplet
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET
@@ -60,10 +90,16 @@ endif()
 # ---------------------------------------------------------------------------
 # Compiler configuration
 # ---------------------------------------------------------------------------
-set(CMAKE_C_COMPILER "$ENV{TARGET_CC}" CACHE PATH "C compiler" FORCE)
+if(_openwrt_cc_launcher)
+    set(CMAKE_C_COMPILER_LAUNCHER "${_openwrt_cc_launcher}" CACHE STRING "C compiler launcher" FORCE)
+endif()
+set(CMAKE_C_COMPILER "${_openwrt_cc_exe}" CACHE PATH "C compiler" FORCE)
 
 if(DEFINED ENV{TARGET_CXX} AND NOT "$ENV{TARGET_CXX}" STREQUAL "")
-    set(CMAKE_CXX_COMPILER "$ENV{TARGET_CXX}" CACHE PATH "C++ compiler" FORCE)
+    if(_openwrt_cxx_launcher)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${_openwrt_cxx_launcher}" CACHE STRING "C++ compiler launcher" FORCE)
+    endif()
+    set(CMAKE_CXX_COMPILER "${_openwrt_cxx_exe}" CACHE PATH "C++ compiler" FORCE)
 endif()
 
 # Append user-supplied flags to the CMake-managed flag variables. We use
@@ -89,8 +125,8 @@ endif()
 #   <sdk>/staging_dir/<target>/usr/include/openssl/ssl.h
 if(DEFINED ENV{STAGING_DIR})
     set(CMAKE_FIND_ROOT_PATH "$ENV{STAGING_DIR}" CACHE PATH "Cross-compilation root path" FORCE)
-elseif(DEFINED ENV{TARGET_CC})
-    get_filename_component(_cc_path "$ENV{TARGET_CC}" DIRECTORY)
+elseif(_openwrt_cc_exe)
+    get_filename_component(_cc_path "${_openwrt_cc_exe}" DIRECTORY)
     get_filename_component(_cc_parent "${_cc_path}/.." ABSOLUTE)
     set(CMAKE_FIND_ROOT_PATH "${_cc_parent}" CACHE PATH "Cross-compilation root path" FORCE)
     message(STATUS "OpenWrt toolchain: derived CMAKE_FIND_ROOT_PATH = ${_cc_parent}")
