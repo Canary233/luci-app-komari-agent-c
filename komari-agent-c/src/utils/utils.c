@@ -83,15 +83,11 @@ static int utils_exec_capture_stdin(char *const argv[], const char *stdin_data,
         return -1;
     }
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        int saved_errno = errno;
-        close(pipefd[0]);
-        close(pipefd[1]);
-        KOMARI_LOG_WARN("exec_capture: fork() failed: %s", strerror(saved_errno));
-        return -1;
-    }
-
+    /* The stdin pipe MUST be created before fork() so the parent and child
+     * share the same pipe object: the parent writes the command text into the
+     * write end, the child dup2()s the read end onto stdin. Creating it after
+     * fork() gave each process a private pipe, so the shell's stdin saw EOF
+     * immediately and "sh -s" executed nothing. */
     int stdin_pipe[2] = {-1, -1};
     if (stdin_data) {
         if (pipe(stdin_pipe) != 0) {
@@ -101,6 +97,17 @@ static int utils_exec_capture_stdin(char *const argv[], const char *stdin_data,
             KOMARI_LOG_WARN("exec_capture: stdin pipe() failed: %s", strerror(saved_errno));
             return -1;
         }
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        int saved_errno = errno;
+        close(pipefd[0]);
+        close(pipefd[1]);
+        if (stdin_pipe[0] >= 0) close(stdin_pipe[0]);
+        if (stdin_pipe[1] >= 0) close(stdin_pipe[1]);
+        KOMARI_LOG_WARN("exec_capture: fork() failed: %s", strerror(saved_errno));
+        return -1;
     }
 
     if (pid == 0) {

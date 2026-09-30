@@ -1364,15 +1364,20 @@ void ws_client_destroy(ws_client_t *client) {
 int ws_client_connect(ws_client_t *client) {
     if (!client || !client->config.endpoint) return -1;
 
-    /* Reset stop flag so the recv thread can run again after a reconnect */
-    pthread_mutex_lock(&client->state_mutex);
-    client->should_stop = false;
-    pthread_mutex_unlock(&client->state_mutex);
-
     /* Close any previously open fd to avoid leaking socket descriptors across reconnects */
     if (client->fd >= 0) {
         ws_client_disconnect(client);
     }
+
+    /* Reset stop flag so the recv thread can run again after a reconnect.
+     * This MUST come after the disconnect() above: ws_client_disconnect()
+     * sets should_stop=true, and leaving it set would make the post-handshake
+     * check tear down the freshly established connection on every reconnect
+     * after a server-initiated close (fd kept open), costing a failed attempt
+     * plus a reconnect_interval delay each cycle. */
+    pthread_mutex_lock(&client->state_mutex);
+    client->should_stop = false;
+    pthread_mutex_unlock(&client->state_mutex);
 
     char scheme[8], host[256], path[512];
     int port;

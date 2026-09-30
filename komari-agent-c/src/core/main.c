@@ -267,8 +267,15 @@ static int sessions_register(terminal_session_t *session) {
         }
     }
     if (rc != 0 && zombie != NULL) {
+        /* Registry full: recycle the zombie's slot. */
         g_sessions[zombie_idx] = session;
         rc = 0;
+    } else if (zombie != NULL) {
+        /* An empty slot was taken instead of the zombie's, so clear the
+         * zombie slot here. Leaving it populated would make g_sessions[]
+         * point at the memory freed below, causing a use-after-free (and a
+         * double free on the next scan) while still reporting cleanup_done. */
+        g_sessions[zombie_idx] = NULL;
     }
     pthread_mutex_unlock(&g_sessions_mutex);
 
