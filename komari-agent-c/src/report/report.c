@@ -762,9 +762,20 @@ void report_write_status_file(const agent_config_t *config,
     /* Write to a temp file and rename() so the LuCI reader never observes a
      * truncated file (same atomic-publish pattern as netstatic persistence). */
     static const char *const kTmpPath = KOMARI_PATH_STATUS_FILE ".tmp";
+    /* Publish failures repeat every report cycle, so warn only once. They are
+     * otherwise invisible: if the file was created by another user (e.g. a
+     * manual root debug run) in a sticky /tmp, the service user's rename()
+     * fails with EPERM and the LuCI dashboard would silently show stale data
+     * forever. */
+    static bool warned_publish_failure = false;
     FILE *fp = fopen(kTmpPath, "w");
     if (!fp) {
-        KOMARI_LOG_DEBUG("[Report] Failed to open status file %s", kTmpPath);
+        if (!warned_publish_failure) {
+            KOMARI_LOG_WARN("[Report] Cannot create status file %s: %s "
+                            "(LuCI status page will be stale)", kTmpPath,
+                            strerror(errno));
+            warned_publish_failure = true;
+        }
         return;
     }
 
@@ -784,7 +795,14 @@ void report_write_status_file(const agent_config_t *config,
     }
 
     if (rename(kTmpPath, KOMARI_PATH_STATUS_FILE) != 0) {
-        KOMARI_LOG_DEBUG("[Report] Failed to publish status file: %s", strerror(errno));
+        if (!warned_publish_failure) {
+            KOMARI_LOG_WARN("[Report] Cannot publish status file %s: %s "
+                            "(LuCI status page will be stale)",
+                            KOMARI_PATH_STATUS_FILE, strerror(errno));
+            warned_publish_failure = true;
+        }
         unlink(kTmpPath);
+        return;
     }
+    warned_publish_failure = false;
 }
