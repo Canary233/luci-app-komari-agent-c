@@ -187,7 +187,7 @@ static void run_list_disk_subcommand(void) {
 }
 
 static void print_usage(const char *prog) {
-    printf("Komari Agent (C Language Version) v%s\n", KOMARI_AGENT_C_VERSION_STRING);
+    printf("Komari Agent v%s\n", KOMARI_AGENT_C_VERSION_STRING);
     printf("\nUsage: %s [options]\n\n", prog);
     printf("Options:\n");
     printf("  -t, --token <token>       Authentication token\n");
@@ -1618,7 +1618,7 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    printf("Komari Agent (C Language Version) v%s\n", KOMARI_AGENT_C_VERSION_STRING);
+    printf("Komari Agent v%s\n", KOMARI_AGENT_C_VERSION_STRING);
     printf("Connecting to: %s\n", g_config.endpoint);
     printf("Report interval: %.1f seconds\n", g_config.interval);
     
