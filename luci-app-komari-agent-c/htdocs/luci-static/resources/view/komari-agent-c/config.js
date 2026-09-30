@@ -12,6 +12,19 @@ return view.extend({
 		/* Basic Settings */
 		s = m.section(form.NamedSection, 'main', 'komari-agent-c', _('Basic Settings'));
 
+		o = s.option(form.Value, 'endpoint', _('Panel Server URL'),
+			_('URL of the Komari Monitor panel server (e.g., https://panel.example.com)'));
+		o.rmempty = false;
+		o.validate = function(section_id, value) {
+			if (!value)
+				return _('Endpoint URL is required');
+
+			if (!value.match(/^https?:\/\//))
+				return _('URL must start with http:// or https://');
+
+			return true;
+		};
+
 		o = s.option(form.Value, 'token', _('Authentication Token'),
 			_('Token for authentication with the panel server'));
 		o.password = true;
@@ -25,19 +38,6 @@ return view.extend({
 
 			if (value.length > 256)
 				return _('Token must not exceed 256 characters');
-
-			return true;
-		};
-
-		o = s.option(form.Value, 'endpoint', _('Panel Server URL'),
-			_('URL of the Komari Monitor panel server (e.g., https://panel.example.com)'));
-		o.rmempty = false;
-		o.validate = function(section_id, value) {
-			if (!value)
-				return _('Endpoint URL is required');
-
-			if (!value.match(/^https?:\/\//))
-				return _('URL must start with http:// or https://');
 
 			return true;
 		};
@@ -136,14 +136,6 @@ return view.extend({
 
 			return true;
 		};
-
-		/* Language Settings */
-		s = m.section(form.NamedSection, 'main', 'komari-agent-c', _('Language Settings'));
-
-		o = s.option(form.DummyValue, '_lang_note', _('Interface Language'));
-		o.rawhtml = true;
-		o.default = _('Auto (follows system)');
-		o.description = _('Interface language follows the system language setting. To switch languages, install the corresponding luci-i18n-komari-agent-c-* package and configure the system language in System → System → Language.');
 
 		/* Web SSH Settings */
 		s = m.section(form.NamedSection, 'main', 'komari-agent-c', _('Web SSH Settings'));

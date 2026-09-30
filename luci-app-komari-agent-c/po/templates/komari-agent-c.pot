@@ -13,9 +13,6 @@ msgstr ""
 msgid "Authentication Token"
 msgstr ""
 
-msgid "Auto (follows system)"
-msgstr ""
-
 msgid "Auto Discovery Key"
 msgstr ""
 
@@ -160,12 +157,6 @@ msgstr ""
 msgid "Info Report Interval (minutes)"
 msgstr ""
 
-msgid "Interface Language"
-msgstr ""
-
-msgid "Interface language follows the system language setting. To switch languages, install the corresponding luci-i18n-komari-agent-c-* package and configure the system language in System → System → Language."
-msgstr ""
-
 msgid "Interval between status reports (1 - 300 seconds)"
 msgstr ""
 
@@ -179,9 +170,6 @@ msgid "Komari Agent Log"
 msgstr ""
 
 msgid "Komari Agent Status"
-msgstr ""
-
-msgid "Language Settings"
 msgstr ""
 
 msgid "Log"

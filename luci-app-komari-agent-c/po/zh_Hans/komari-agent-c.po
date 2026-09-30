@@ -16,9 +16,6 @@ msgstr "高级设置"
 msgid "Authentication Token"
 msgstr "认证令牌"
 
-msgid "Auto (follows system)"
-msgstr "自动（跟随系统）"
-
 msgid "Auto Discovery Key"
 msgstr "自动发现密钥"
 
@@ -163,12 +160,6 @@ msgstr "包含的网络接口"
 msgid "Info Report Interval (minutes)"
 msgstr "信息上报间隔（分钟）"
 
-msgid "Interface Language"
-msgstr "界面语言"
-
-msgid "Interface language follows the system language setting. To switch languages, install the corresponding luci-i18n-komari-agent-c-* package and configure the system language in System → System → Language."
-msgstr "界面语言跟随系统语言设置。如需切换语言，请安装对应的 luci-i18n-komari-agent-c-* 语言包，并在 系统 → 系统 → 语言 中配置系统语言。"
-
 msgid "Interval between status reports (1 - 300 seconds)"
 msgstr "状态上报的时间间隔（1 - 300 秒）"
 
@@ -183,9 +174,6 @@ msgstr "Komari Agent 日志"
 
 msgid "Komari Agent Status"
 msgstr "Komari Agent 状态"
-
-msgid "Language Settings"
-msgstr "语言设置"
 
 msgid "Log"
 msgstr "日志"
