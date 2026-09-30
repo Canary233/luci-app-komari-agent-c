@@ -251,6 +251,9 @@ static ssize_t http_stream_read(http_stream_t *s, char *out, size_t out_len) {
             (long)n > s->content_remaining) {
             n = s->content_remaining;
         }
+        /* Never copy more than the caller's buffer: http_stream_fill() can
+         * return up to HTTP_RAW_BUF_SIZE bytes, which may exceed out_len. */
+        if ((size_t)n > out_len) n = (ssize_t)out_len;
         memcpy(out, s->raw + s->raw_pos, (size_t)n);
         s->raw_pos += (size_t)n;
         if (s->content_remaining >= 0) s->content_remaining -= n;
@@ -954,6 +957,9 @@ int http_client_request(const http_client_request_t *req_in,
             if (compress_gunzip(acc, acc_len, &plain, &plain_len) == 0) {
                 final_body = plain;
                 final_len = plain_len;
+                /* The gzip source buffer is no longer referenced. */
+                free(acc);
+                acc = NULL;
             } else {
                 KOMARI_LOG_WARN("http: gzip response decoding failed, returning raw body");
             }

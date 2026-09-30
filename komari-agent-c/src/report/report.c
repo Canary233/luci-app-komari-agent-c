@@ -355,9 +355,17 @@ int report_generate_v2_with_acks_ex(const agent_config_t *config,
     offset += n;
 
     for (int i = 0; i < ack_count && ack_ids; i++) {
+        /* Reserve enough room for the closing "]}}" plus a NUL so a full ACK
+         * never leaves the JSON truncated. If the buffer cannot hold every
+         * pending ACK, stop early: the report stays valid and the un-ACKed
+         * events are recovered through server retransmission (main.c clears
+         * all ACKs after a successful send and the server re-sends events it
+         * has not seen acknowledged). Without this, a large ACK backlog made
+         * every report fail permanently, wedging the agent. */
+        if (buf_len - (size_t)offset <= 16) break;
         n = snprintf(buf + offset, buf_len - (size_t)offset, "%s%d",
                      i > 0 ? "," : "", ack_ids[i]);
-        if (n < 0 || (size_t)n >= buf_len - (size_t)offset) return -1;
+        if (n < 0 || (size_t)n >= buf_len - (size_t)offset) break;
         offset += n;
     }
 

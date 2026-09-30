@@ -161,8 +161,9 @@ static int dns_parse_server(const char *spec, struct sockaddr_storage *out,
             memcpy(out, res->ai_addr, res->ai_addrlen);
             *out_len = (socklen_t)res->ai_addrlen;
             freeaddrinfo(res);
+        } else {
+            *out_len = sizeof(struct sockaddr_in);
         }
-        *out_len = sizeof(struct sockaddr_in);
     }
     return 0;
 }
