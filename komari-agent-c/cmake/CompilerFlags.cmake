@@ -77,8 +77,11 @@ if(KOMARI_TARGET_LINUX OR KOMARI_TARGET_OPENWRT)
         komari_add_c_flag(-fvisibility=hidden "Hide non-exported symbols")
     endif()
 
-    # _FORTIFY_SOURCE requires optimization, so only enable for -O1+
-    if(KOMARI_HARDEN_FORTIFY AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # _FORTIFY_SOURCE requires optimization, so only enable for -O1+.
+    # Debug/Sanitize/Coverage build types use -O0, where _FORTIFY_SOURCE only
+    # produces a "#warning ... requires compiling with optimization" that
+    # -Werror turns into a hard build failure.
+    if(KOMARI_HARDEN_FORTIFY AND NOT CMAKE_BUILD_TYPE MATCHES "^(Debug|Sanitize|Coverage)$")
         # Skip on musl/OpenWrt where _FORTIFY_SOURCE support varies
         if(NOT KOMARI_TARGET_OPENWRT)
             komari_add_c_flag(-D_FORTIFY_SOURCE=2 "Run-time buffer overflow detection")

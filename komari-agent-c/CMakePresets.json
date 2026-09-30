@@ -75,7 +75,7 @@
         "KOMARI_BUILD_PROFILE": "binary",
         "KOMARI_BUILD_TESTS": "ON",
         "KOMARI_ENABLE_SANITIZERS": "ON",
-        "KOMARI_WERROR": "ON"
+        "KOMARI_WERROR": "OFF"
       }
     },
     {

@@ -16,7 +16,6 @@ build-openwrt/
 build-*/
 
 obj/
-/komari-agent-c
 *.o
 *.a
 *.so

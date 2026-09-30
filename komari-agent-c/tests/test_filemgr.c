@@ -96,6 +96,7 @@ void test_op_mkdir_and_create_and_stat(void) {
 
     /* create an empty file inside it */
     cJSON_Delete(result);
+    cJSON_Delete(params);
 
     snprintf(params_str, sizeof(params_str),
              "{\"uuid\":\"u1\",\"request_id\":1,\"op\":\"create\","
@@ -108,6 +109,7 @@ void test_op_mkdir_and_create_and_stat(void) {
 
     /* stat returns a fileInfo */
     cJSON_Delete(result);
+    cJSON_Delete(params);
     snprintf(params_str, sizeof(params_str),
              "{\"uuid\":\"u1\",\"request_id\":1,\"op\":\"stat\","
              "\"args\":{\"path\":\"%s/a/b/file.txt\"}}", tmp_dir);
