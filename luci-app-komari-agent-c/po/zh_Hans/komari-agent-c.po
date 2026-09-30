@@ -70,8 +70,8 @@ msgstr "已断开"
 msgid "Panel Server"
 msgstr "面板服务器"
 
-msgid "Agent Uptime"
-msgstr "代理运行时间"
+msgid "System Uptime"
+msgstr "系统运行时间"
 
 msgid "System Metrics"
 msgstr "系统指标"

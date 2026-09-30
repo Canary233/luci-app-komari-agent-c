@@ -67,7 +67,7 @@ msgstr ""
 msgid "Panel Server"
 msgstr ""
 
-msgid "Agent Uptime"
+msgid "System Uptime"
 msgstr ""
 
 msgid "System Metrics"

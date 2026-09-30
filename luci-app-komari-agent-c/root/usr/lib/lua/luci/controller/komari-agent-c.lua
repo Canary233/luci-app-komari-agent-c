@@ -143,8 +143,29 @@ local function check_csrf()
     end
     local token = luci.http.formvalue("token")
     local ctx = require("luci.dispatcher").context
-    return token ~= nil and token ~= "" and
-        ctx ~= nil and ctx.authtoken ~= nil and token == ctx.authtoken
+    if not (token ~= nil and token ~= "" and ctx ~= nil and
+            ctx.authtoken ~= nil and token == ctx.authtoken) then
+        return false
+    end
+
+    -- The dispatcher only enforces *read* access for call() actions, so a
+    -- user granted read-only access to this app could otherwise start/stop/
+    -- restart the service. Require write access to the komari-agent-c UCI
+    -- config. Fail open when the ubus check is unavailable: the token check
+    -- above is the primary CSRF defense and a broken session lookup must not
+    -- lock out administrators.
+    if ctx.authsession then
+        local r = luci.util.ubus("session", "access", {
+            ubus_rpc_session = ctx.authsession,
+            scope = "uci",
+            object = "komari-agent-c",
+            ["function"] = "write"
+        })
+        if type(r) == "table" then
+            return r.access == true
+        end
+    end
+    return true
 end
 
 local function respond(code, message)
@@ -196,37 +217,44 @@ function api_test_connection()
         return
     end
 
-    -- The endpoint is interpolated into a shell command, and the CBI-side
-    -- validation only checks the URL scheme. Restrict the remaining
-    -- characters to a conservative URL set and additionally pass the value
-    -- through shellquote so shell metacharacters can never break out of the
-    -- quoting (the endpoint is admin-controlled UCI data, but defense in
-    -- depth costs nothing and the previous single-quote wrapping alone was
-    -- escapable with a single quote).
-    if not endpoint:match("^https?://[A-Za-z0-9.:%[%]_/~-]+$") then
-        respond(1, "Endpoint contains invalid characters")
+    -- The endpoint is interpolated into a shell command. Require the http(s)
+    -- scheme (which also prevents curl option injection, reinforced by the
+    -- explicit `--` below) and pass the value through shellquote so shell
+    -- metacharacters can never break out of the quoting. A restrictive
+    -- character allowlist is intentionally NOT used: it rejected valid panel
+    -- URLs containing '?', '&', '=', '%', '+' and '#'.
+    if not endpoint:match("^https?://") then
+        respond(1, "Endpoint must start with http:// or https://")
         return
     end
 
-    local curl_opts = ""
-    if ignore_cert == "1" then
-        curl_opts = "-k"
-    end
-
+    -- Stock OpenWrt ships uclient-fetch and busybox wget but NOT curl, so a
+    -- curl-only probe silently reported every endpoint as unreachable. Try the
+    -- standard OpenWrt fetchers first, then curl as a last resort. Any HTTP
+    -- response (including 401/404) counts as "reachable", which is what a
+    -- connectivity test needs.
+    local insecure_fetch = (ignore_cert == "1") and "--no-check-certificate" or ""
+    local insecure_curl = (ignore_cert == "1") and "-k" or ""
+    local q = luci.util.shellquote(endpoint)
     local cmd = string.format(
-        "curl -s -o /dev/null -w '%%{http_code}' --connect-timeout 5 %s %s 2>/dev/null",
-        curl_opts, luci.util.shellquote(endpoint)
+        "if command -v uclient-fetch >/dev/null 2>&1; then " ..
+        "  uclient-fetch -q -O /dev/null --timeout=5 %s %s 2>/dev/null && echo connected || echo failed; " ..
+        "elif command -v wget >/dev/null 2>&1; then " ..
+        "  wget -q -O /dev/null --timeout=5 %s %s 2>/dev/null && echo connected || echo failed; " ..
+        "else " ..
+        "  curl -s -o /dev/null --connect-timeout 5 %s -- %s 2>/dev/null && echo connected || echo failed; " ..
+        "fi",
+        insecure_fetch, q, insecure_fetch, q, insecure_curl, q
     )
 
-    local http_code = luci.util.exec(cmd)
-    http_code = tonumber(http_code) or 0
+    local res = luci.util.exec(cmd) or ""
+    local connected = res:match("connected") ~= nil
 
     luci.http.prepare_content("application/json")
-    if http_code > 0 then
+    if connected then
         luci.http.write_json({
             code = 0,
-            message = "Connection successful (HTTP " .. http_code .. ")",
-            http_code = http_code
+            message = "Connection successful"
         })
     else
         luci.http.write_json({
