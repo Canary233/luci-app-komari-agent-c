@@ -3,9 +3,9 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=LuCI support for Komari Agent (C Language Version)
+LUCI_TITLE:=LuCI support for Komari Agent
 LUCI_DESCRIPTION:=LuCI web interface for Komari Agent configuration and monitoring.
-LUCI_DEPENDS:=+komari-agent-c +luci-compat
+LUCI_DEPENDS:=+komari-agent-c +luci-base
 LUCI_PKGARCH:=all
 
 PKG_VERSION:=1.0.0

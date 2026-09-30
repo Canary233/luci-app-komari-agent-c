@@ -1,4 +1,4 @@
-# Komari Agent（C/OpenWrt 版本）
+# Komari Agent
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![OpenWrt](https://img.shields.io/badge/platform-OpenWrt-orange.svg)](https://openwrt.org/)

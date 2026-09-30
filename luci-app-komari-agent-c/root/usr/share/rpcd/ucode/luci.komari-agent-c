@@ -1,0 +1,143 @@
+#!/usr/bin/ucode
+
+'use strict';
+
+import { readfile, popen, lsdir } from 'fs';
+import { cursor } from 'uci';
+
+const NAME = 'komari-agent-c';
+const STATUS_FILE = '/tmp/komari-agent-c-status.json';
+
+function command(cmd) {
+	let fd = popen(cmd, 'r');
+
+	if (!fd)
+		return { out: '', code: -1 };
+
+	let out = fd.read('all') ?? '';
+	let code = fd.close();
+
+	return { out: out, code: code };
+}
+
+function run(cmd) {
+	return command(cmd).out;
+}
+
+function shellquote(s) {
+	return "'" + replace(s ?? '', "'", "'\\''") + "'";
+}
+
+function is_running() {
+	return length(trim(run(`pidof ${NAME} 2>/dev/null`))) > 0;
+}
+
+function is_enabled() {
+	for (let f in (lsdir('/etc/rc.d') ?? []))
+		if (match(f, /^S[0-9]+komari-agent-c$/))
+			return true;
+
+	return false;
+}
+
+function system_uptime() {
+	let m = match(trim(readfile('/proc/uptime') ?? ''), /^([0-9]+)/);
+
+	return m ? int(m[1]) : 0;
+}
+
+function get_status() {
+	let res = {
+		running: is_running(),
+		enabled: is_enabled(),
+		uptime: system_uptime()
+	};
+
+	if (res.running) {
+		let txt = readfile(STATUS_FILE);
+
+		if (txt && length(trim(txt))) {
+			let data = null;
+
+			try {
+				data = json(txt);
+			}
+			catch (e) {
+				data = null;
+			}
+
+			if (type(data) == 'object')
+				res.data = data;
+		}
+	}
+
+	return res;
+}
+
+function get_log(request) {
+	let lines = 100;
+	let args = request?.args ?? {};
+
+	if (args.lines != null) {
+		let n = int(args.lines);
+
+		if (n == n)
+			lines = n;
+	}
+
+	if (lines < 1)
+		lines = 1;
+
+	if (lines > 2000)
+		lines = 2000;
+
+	let out = run(`logread -e ${NAME} 2>/dev/null | tail -n ${lines}`);
+
+	return { code: 0, log: out };
+}
+
+function service_action(action) {
+	let code = command(`/etc/init.d/${NAME} ${action} >/dev/null 2>&1`).code;
+
+	return { code: code == 0 ? 0 : 1 };
+}
+
+function test_connection() {
+	let ctx = cursor();
+	let endpoint = ctx.get(NAME, 'main', 'endpoint') ?? '';
+	let ignore = ctx.get(NAME, 'main', 'ignore_unsafe_cert') ?? '0';
+
+	ctx.unload();
+
+	if (endpoint == '')
+		return { code: 1, reason: 'not_configured' };
+
+	if (!match(endpoint, /^https?:\/\//))
+		return { code: 1, reason: 'invalid_url' };
+
+	let insecure_fetch = ignore == '1' ? '--no-check-certificate' : '';
+	let insecure_curl = ignore == '1' ? '-k' : '';
+	let q = shellquote(endpoint);
+	let cmd = `if command -v uclient-fetch >/dev/null 2>&1; then ` +
+		`uclient-fetch -q -O /dev/null --timeout=5 ${insecure_fetch} ${q} 2>/dev/null && echo connected || echo failed; ` +
+		`elif command -v wget >/dev/null 2>&1; then ` +
+		`wget -q -O /dev/null --timeout=5 ${insecure_fetch} ${q} 2>/dev/null && echo connected || echo failed; ` +
+		`else ` +
+		`curl -s -o /dev/null --connect-timeout 5 ${insecure_curl} -- ${q} 2>/dev/null && echo connected || echo failed; ` +
+		`fi`;
+
+	let out = run(cmd);
+
+	return match(out, /connected/) ? { code: 0 } : { code: 1, reason: 'unreachable' };
+}
+
+const methods = {
+	status: { call: get_status },
+	log: { args: { lines: 100 }, call: get_log },
+	start: { call: function() { return service_action('start'); } },
+	stop: { call: function() { return service_action('stop'); } },
+	restart: { call: function() { return service_action('restart'); } },
+	test_connection: { call: test_connection }
+};
+
+return { 'luci.komari-agent-c': methods };

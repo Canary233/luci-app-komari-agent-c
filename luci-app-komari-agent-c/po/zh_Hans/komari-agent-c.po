@@ -4,116 +4,11 @@
 msgid ""
 msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
-"Project-Id-Version: Komari Agent (C Language Version)\n"
+"Project-Id-Version: Komari Agent\n"
 "Language: zh_Hans\n"
 
-msgid "Komari Agent (C Language Version)"
-msgstr "Komari 代理 (C语言版)"
-
-msgid "Configuration"
-msgstr "配置"
-
-msgid "Status"
-msgstr "状态"
-
-msgid "Log"
-msgstr "日志"
-
-msgid "Service Status"
-msgstr "服务状态"
-
-msgid "Running"
-msgstr "运行中"
-
-msgid "Not Running"
-msgstr "未运行"
-
-msgid "Start"
-msgstr "启动"
-
-msgid "Stop"
-msgstr "停止"
-
-msgid "Restart"
-msgstr "重启"
-
-msgid "Test Connection"
-msgstr "测试连接"
-
-msgid "Testing..."
-msgstr "测试中..."
-
-msgid "Connection successful"
-msgstr "连接成功"
-
-msgid "Connection failed"
-msgstr "连接失败"
-
-msgid "Failed to start service"
-msgstr "启动服务失败"
-
-msgid "Failed to stop service"
-msgstr "停止服务失败"
-
-msgid "Failed to restart service"
-msgstr "重启服务失败"
-
-msgid "Connection Status"
-msgstr "连接状态"
-
-msgid "Connected"
-msgstr "已连接"
-
-msgid "Disconnected"
-msgstr "已断开"
-
-msgid "Panel Server"
-msgstr "面板服务器"
-
-msgid "System Uptime"
-msgstr "系统运行时间"
-
-msgid "System Metrics"
-msgstr "系统指标"
-
-msgid "CPU Usage"
-msgstr "CPU 使用率"
-
-msgid "Memory Usage"
-msgstr "内存使用率"
-
-msgid "Disk Usage"
-msgstr "磁盘使用率"
-
-msgid "Network Traffic"
-msgstr "网络流量"
-
-msgid "Download Speed"
-msgstr "下载速度"
-
-msgid "Upload Speed"
-msgstr "上传速度"
-
-msgid "Basic Settings"
-msgstr "基本设置"
-
-msgid "Connection Settings"
-msgstr "连接设置"
-
-msgid "Web SSH Settings"
-msgstr "Web SSH 设置"
-
-msgid "Network Interface Settings"
-msgstr "网络接口设置"
-
-msgid "Disk Settings"
-msgstr "磁盘设置"
-
-msgid "Traffic Statistics"
-msgstr "流量统计"
-
-msgid "Custom IP Addresses"
-msgstr "自定义 IP 地址"
+msgid "Actions"
+msgstr "操作"
 
 msgid "Advanced Settings"
 msgstr "高级设置"
@@ -121,20 +16,56 @@ msgstr "高级设置"
 msgid "Authentication Token"
 msgstr "认证令牌"
 
-msgid "Token for authentication with the panel server"
-msgstr "用于面板服务器认证的令牌"
+msgid "Auto (follows system)"
+msgstr "自动（跟随系统）"
 
-msgid "Panel Server URL"
-msgstr "面板服务器地址"
+msgid "Auto Discovery Key"
+msgstr "自动发现密钥"
 
-msgid "URL of the Komari Monitor panel server (e.g., https://panel.example.com)"
-msgstr "Komari 监控面板服务器的 URL（例如：https://panel.example.com）"
+msgid "Auto Refresh"
+msgstr "自动刷新"
 
-msgid "Report Interval (seconds)"
-msgstr "上报间隔（秒）"
+msgid "Auto Start"
+msgstr "开机自启"
 
-msgid "Interval between status reports (0.5 - 300 seconds)"
-msgstr "状态上报的时间间隔（0.5 - 300 秒）"
+msgid "Auto-discovery key for auto-registration to the panel (optional)"
+msgstr "用于自动注册到面板的自动发现密钥（可选）"
+
+msgid "Basic Settings"
+msgstr "基本设置"
+
+msgid "CPU Usage"
+msgstr "CPU 使用率"
+
+msgid "Comma-separated list of network interfaces to exclude from monitoring; wildcards are supported"
+msgstr "要从监控中排除的网络接口列表，逗号分隔；支持通配符"
+
+msgid "Comma-separated list of network interfaces to monitor; wildcards such as eth* are supported (empty = all non-virtual interfaces)"
+msgstr "要监控的网络接口列表，逗号分隔；支持 eth* 等通配符（留空表示全部非虚拟接口）"
+
+msgid "Compatibility alias kept for Go flag parity; on Linux this behaves like the default calculation"
+msgstr "为对齐 Go 参数保留的兼容别名；在 Linux 上与默认计算方式一致"
+
+msgid "Configuration"
+msgstr "配置"
+
+msgid "Configuration for Komari Agent - a lightweight monitoring agent for OpenWrt."
+msgstr "Komari Agent 配置 - 专为 OpenWrt 设计的轻量级监控代理。"
+
+msgid "Connected"
+msgstr "已连接"
+
+msgid "Connection Settings"
+msgstr "连接设置"
+
+msgid "Connection Status"
+msgstr "连接状态"
+
+msgid "Connection failed"
+msgstr "连接失败"
+
+msgid "Connection successful"
+msgstr "连接成功"
 
 msgid "Custom DNS Server"
 msgstr "自定义 DNS 服务器"
@@ -142,73 +73,257 @@ msgstr "自定义 DNS 服务器"
 msgid "Custom DNS server for resolving panel hostname (optional)"
 msgstr "用于解析面板主机名的自定义 DNS 服务器（可选）"
 
+msgid "Custom IP Addresses"
+msgstr "自定义 IP 地址"
+
+msgid "Custom IPv4 Address"
+msgstr "自定义 IPv4 地址"
+
+msgid "Custom IPv6 Address"
+msgstr "自定义 IPv6 地址"
+
+msgid "Day of month for traffic statistics rotation (0 = disabled, 1-28)"
+msgstr "流量统计轮转的月份日期（0 = 禁用，1-28）"
+
+msgid "Disable Auto Update Check"
+msgstr "禁用自动更新检查"
+
+msgid "Disable Compression"
+msgstr "禁用压缩"
+
+msgid "Disable Web SSH"
+msgstr "禁用 Web SSH"
+
+msgid "Disable WebSocket permessage-deflate and HTTP gzip compression"
+msgstr "禁用 WebSocket permessage-deflate 与 HTTP gzip 压缩"
+
+msgid "Disable automatic update checking on startup"
+msgstr "禁用启动时的自动更新检查"
+
+msgid "Disable the Web SSH terminal feature for security"
+msgstr "出于安全考虑禁用 Web SSH 终端功能"
+
+msgid "Disabled"
+msgstr "已禁用"
+
+msgid "Disconnected"
+msgstr "已断开"
+
+msgid "Disk Settings"
+msgstr "磁盘设置"
+
+msgid "Disk Usage"
+msgstr "磁盘使用率"
+
+msgid "Download Speed"
+msgstr "下载速度"
+
+msgid "Enabled"
+msgstr "已启用"
+
+msgid "Endpoint URL is required"
+msgstr "面板地址为必填项"
+
+msgid "Endpoint must start with http:// or https://"
+msgstr "面板地址必须以 http:// 或 https:// 开头"
+
+msgid "Endpoint not configured"
+msgstr "面板地址未配置"
+
+msgid "Exclude Network Interfaces"
+msgstr "排除的网络接口"
+
+msgid "Failed to restart service"
+msgstr "重启服务失败"
+
+msgid "Failed to start service"
+msgstr "启动服务失败"
+
+msgid "Failed to stop service"
+msgstr "停止服务失败"
+
+msgid "IPv4"
+msgstr "IPv4"
+
+msgid "IPv6"
+msgstr "IPv6"
+
 msgid "Ignore Certificate Errors"
 msgstr "忽略证书错误"
 
 msgid "Ignore SSL certificate validation errors (not recommended for production)"
 msgstr "忽略 SSL 证书验证错误（生产环境不推荐）"
 
-msgid "Maximum Retries"
-msgstr "最大重试次数"
-
-msgid "Maximum number of connection retry attempts"
-msgstr "连接重试的最大尝试次数"
-
-msgid "Reconnect Interval (seconds)"
-msgstr "重连间隔（秒）"
-
-msgid "Seconds to wait between reconnection attempts"
-msgstr "重连尝试之间的等待秒数"
-
-msgid "Info Report Interval (minutes)"
-msgstr "信息上报间隔（分钟）"
-
-msgid "Minutes between full system information reports"
-msgstr "完整系统信息上报之间的分钟数"
-
-msgid "Disable Web SSH"
-msgstr "禁用 Web SSH"
-
-msgid "Disable the Web SSH terminal feature for security"
-msgstr "出于安全考虑禁用 Web SSH 终端功能"
+msgid "Include Mount Points"
+msgstr "包含的挂载点"
 
 msgid "Include Network Interfaces"
 msgstr "包含的网络接口"
 
-msgid "Comma-separated list of network interfaces to monitor (empty = all)"
-msgstr "要监控的网络接口列表，逗号分隔（留空表示全部）"
+msgid "Info Report Interval (minutes)"
+msgstr "信息上报间隔（分钟）"
 
-msgid "Exclude Network Interfaces"
-msgstr "排除的网络接口"
+msgid "Interface Language"
+msgstr "界面语言"
 
-msgid "Comma-separated list of network interfaces to exclude from monitoring"
-msgstr "要从监控中排除的网络接口列表，逗号分隔"
+msgid "Interface language follows the system language setting. To switch languages, install the corresponding luci-i18n-komari-agent-c-* package and configure the system language in System → System → Language."
+msgstr "界面语言跟随系统语言设置。如需切换语言，请安装对应的 luci-i18n-komari-agent-c-* 语言包，并在 系统 → 系统 → 语言 中配置系统语言。"
 
-msgid "Include Mount Points"
-msgstr "包含的挂载点"
+msgid "Interval between status reports (1 - 300 seconds)"
+msgstr "状态上报的时间间隔（1 - 300 秒）"
 
-msgid "Comma-separated list of mount points to monitor (empty = all)"
-msgstr "要监控的挂载点列表，逗号分隔（留空表示全部）"
+msgid "Komari Agent"
+msgstr "Komari Agent"
+
+msgid "Komari Agent Configuration"
+msgstr "Komari Agent 配置"
+
+msgid "Komari Agent Log"
+msgstr "Komari Agent 日志"
+
+msgid "Komari Agent Status"
+msgstr "Komari Agent 状态"
+
+msgid "Language Settings"
+msgstr "语言设置"
+
+msgid "Log"
+msgstr "日志"
+
+msgid "Log Content"
+msgstr "日志内容"
+
+msgid "Log Lines"
+msgstr "日志行数"
+
+msgid "Log Settings"
+msgstr "日志设置"
+
+msgid "Maximum Retries"
+msgstr "最大重试次数"
+
+msgid "Maximum interval is 300 seconds"
+msgstr "最大间隔为 300 秒"
+
+msgid "Maximum number of connection retry attempts"
+msgstr "连接重试的最大尝试次数"
+
+msgid "Maximum value is %d"
+msgstr "最大值为 %d"
+
+msgid "Memory Includes Cache"
+msgstr "内存统计含缓存"
+
+msgid "Memory Usage"
+msgstr "内存使用率"
+
+msgid "Minimum interval is 1 second"
+msgstr "最小间隔为 1 秒"
+
+msgid "Minimum value is %d"
+msgstr "最小值为 %d"
+
+msgid "Minutes between full system information reports"
+msgstr "完整系统信息上报之间的分钟数"
 
 msgid "Month Rotate Day"
 msgstr "月份轮转日"
 
-msgid "Day of month for traffic statistics rotation (0 = disabled, 1-28)"
-msgstr "流量统计轮转的月份日期（0 = 禁用，1-28）"
+msgid "Must be a number"
+msgstr "必须是数字"
 
-msgid "Custom IPv4 Address"
-msgstr "自定义 IPv4 地址"
+msgid "Network Interface Settings"
+msgstr "网络接口设置"
+
+msgid "No log entries found"
+msgstr "未找到日志条目"
+
+msgid "Not Running"
+msgstr "未运行"
 
 msgid "Override detected IPv4 address (optional)"
 msgstr "覆盖检测到的 IPv4 地址（可选）"
 
-msgid "Custom IPv6 Address"
-msgstr "自定义 IPv6 地址"
-
 msgid "Override detected IPv6 address (optional)"
 msgstr "覆盖检测到的 IPv6 地址（可选）"
 
+msgid "Panel Server"
+msgstr "面板服务器"
 
+msgid "Panel Server URL"
+msgstr "面板服务器地址"
+
+msgid "Preferred IP Version"
+msgstr "首选 IP 版本"
+
+msgid "Preferred IP version for connecting to the panel (empty = system default)"
+msgstr "连接面板时优先使用的 IP 版本（空 = 跟随系统）"
+
+msgid "Raw Memory Calculation"
+msgstr "原始内存计算"
+
+msgid "Reconnect Interval (seconds)"
+msgstr "重连间隔（秒）"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Report Interval (seconds)"
+msgstr "上报间隔（秒）"
+
+msgid "Report memory usage including cache/buffer (used = total - free)"
+msgstr "内存使用统计包含缓存/缓冲（used = total - free）"
+
+msgid "Restart"
+msgstr "重启"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Seconds to wait between reconnection attempts"
+msgstr "重连尝试之间的等待秒数"
+
+msgid "Semicolon-separated list of mount points to monitor (empty = all physical filesystems)"
+msgstr "要监控的挂载点列表，分号分隔（留空表示全部物理文件系统）"
+
+msgid "Service Status"
+msgstr "服务状态"
+
+msgid "Service restarted"
+msgstr "服务已重启"
+
+msgid "Service started"
+msgstr "服务已启动"
+
+msgid "Service stopped"
+msgstr "服务已停止"
+
+msgid "Start"
+msgstr "启动"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Stop"
+msgstr "停止"
+
+msgid "Stop Auto Refresh"
+msgstr "停止自动刷新"
+
+msgid "System Metrics"
+msgstr "系统指标"
+
+msgid "System Uptime"
+msgstr "系统运行时间"
+
+msgid "System default"
+msgstr "跟随系统"
+
+msgid "Test Connection"
+msgstr "测试连接"
+
+msgid "Token for authentication with the panel server"
+msgstr "用于面板服务器认证的令牌"
 
 msgid "Token is required"
 msgstr "令牌为必填项"
@@ -219,92 +334,20 @@ msgstr "令牌长度至少为 8 个字符"
 msgid "Token must not exceed 256 characters"
 msgstr "令牌长度不能超过 256 个字符"
 
-msgid "Endpoint URL is required"
-msgstr "面板地址为必填项"
+msgid "Traffic Statistics"
+msgstr "流量统计"
 
 msgid "URL must start with http:// or https://"
 msgstr "URL 必须以 http:// 或 https:// 开头"
 
-msgid "Invalid URL format"
-msgstr "URL 格式无效"
+msgid "URL of the Komari Monitor panel server (e.g., https://panel.example.com)"
+msgstr "Komari Monitor 面板服务器的 URL（例如：https://panel.example.com）"
 
-msgid "Must be a number"
-msgstr "必须是数字"
+msgid "Upload Speed"
+msgstr "上传速度"
 
-msgid "Minimum interval is 0.5 seconds"
-msgstr "最小间隔为 0.5 秒"
-
-msgid "Maximum interval is 300 seconds"
-msgstr "最大间隔为 300 秒"
-
-msgid "Minimum value is %d"
-msgstr "最小值为 %d"
-
-msgid "Maximum value is %d"
-msgstr "最大值为 %d"
-
-msgid "Invalid IPv4 address format"
-msgstr "IPv4 地址格式无效"
-
-msgid "IPv4 octets must be between 0 and 255"
-msgstr "IPv4 八位组必须在 0 到 255 之间"
-
-msgid "Invalid IPv6 address format"
-msgstr "IPv6 地址格式无效"
-
-msgid "Log Lines"
-msgstr "日志行数"
-
-msgid "Refresh"
-msgstr "刷新"
-
-msgid "Auto Refresh"
-msgstr "自动刷新"
-
-msgid "Stop Auto Refresh"
-msgstr "停止自动刷新"
-
-msgid "Clear Log"
-msgstr "清除日志"
-
-msgid "Download"
-msgstr "下载"
-
-msgid "Log Content"
-msgstr "日志内容"
-
-msgid "Loading..."
-msgstr "加载中..."
-
-msgid "No log entries found"
-msgstr "未找到日志条目"
-
-msgid "Are you sure you want to clear the log?"
-msgstr "确定要清除日志吗？"
-
-msgid "Log cleared successfully"
-msgstr "日志清除成功"
-
-msgid "Failed to clear log"
-msgstr "清除日志失败"
-
-msgid "Configuration for Komari Agent - a lightweight monitoring agent for OpenWrt."
-msgstr "Komari 代理配置 - 专为 OpenWrt 设计的轻量级监控代理。"
-
-msgid "Komari Agent Status"
-msgstr "Komari 代理状态"
-
-msgid "Komari Agent Log"
-msgstr "Komari 代理日志"
-
-msgid "Actions"
-msgstr "操作"
-
-msgid "Log Settings"
-msgstr "日志设置"
-
-msgid "Failed to load log"
-msgstr "加载日志失败"
+msgid "Web SSH Settings"
+msgstr "Web SSH 设置"
 
 msgid "d"
 msgstr "天"
@@ -314,92 +357,3 @@ msgstr "小时"
 
 msgid "min"
 msgstr "分钟"
-
-msgid "Service started"
-msgstr "服务已启动"
-
-msgid "Service stopped"
-msgstr "服务已停止"
-
-msgid "Service restarted"
-msgstr "服务已重启"
-
-msgid "Komari Agent Configuration"
-msgstr "Komari 代理配置"
-
-msgid "Language Settings"
-msgstr "语言设置"
-
-msgid "Interface Language"
-msgstr "界面语言"
-
-msgid "Auto (follows system)"
-msgstr "自动（跟随系统）"
-
-msgid "Interface language follows the system language setting. To switch languages, install the corresponding luci-i18n-komari-agent-c-* package and configure the system language in System → System → Language."
-msgstr "界面语言跟随系统语言设置。如需切换语言，请安装对应的 luci-i18n-komari-agent-c-* 语言包，并在 系统 → 系统 → 语言 中配置系统语言。"
-
-msgid "Auto Discovery Key"
-msgstr "自动发现密钥"
-
-msgid "Auto-discovery key for auto-registration to the panel (optional)"
-msgstr "用于自动注册到面板的自动发现密钥（可选）"
-
-
-
-msgid "v1 (Legacy)"
-msgstr "v1（旧版）"
-
-msgid "v2 (Current)"
-msgstr "v2（当前版本）"
-
-msgid "Disable Compression"
-msgstr "禁用压缩"
-
-msgid "Disable data compression for protocol communication"
-msgstr "禁用协议通信的数据压缩"
-
-msgid "Disable Auto Update Check"
-msgstr "禁用自动更新检查"
-
-msgid "Disable automatic update checking on startup"
-msgstr "禁用启动时的自动更新检查"
-
-msgid "Auto Start"
-msgstr "开机自启"
-
-msgid "Enabled"
-msgstr "已启用"
-
-msgid "Disabled"
-msgstr "已禁用"
-
-msgid "Preferred IP Version"
-msgstr "首选 IP 版本"
-
-msgid "Preferred IP version for connecting to the panel (empty = system default)"
-msgstr "连接面板时优先使用的 IP 版本（空 = 跟随系统）"
-
-msgid "System default"
-msgstr "跟随系统"
-
-msgid "IPv4"
-msgstr "IPv4"
-
-msgid "IPv6"
-msgstr "IPv6"
-
-msgid "Memory Includes Cache"
-msgstr "内存统计含缓存"
-
-msgid "Report memory usage including cache/buffer (used = total - free)"
-msgstr "内存使用统计包含缓存/缓冲（used = total - free）"
-
-msgid "Raw Memory Calculation"
-msgstr "原始内存计算"
-
-msgid "Compatibility alias kept for Go flag parity; on Linux this behaves like the default calculation"
-msgstr "为对齐 Go 参数保留的兼容别名；在 Linux 上与默认计算方式一致"
-
-msgid "Disable WebSocket permessage-deflate and HTTP gzip compression"
-msgstr "禁用 WebSocket permessage-deflate 与 HTTP gzip 压缩"

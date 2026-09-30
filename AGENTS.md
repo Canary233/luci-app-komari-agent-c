@@ -1,4 +1,4 @@
-# Komari Agent（C 语言版本）
+# Komari Agent
 
 ## 项目概述
 
@@ -10,7 +10,7 @@
 - **构建系统**：CMake（模块化配置，见 `komari-agent-c/cmake/` 目录）
 - **CI/CD**：GitHub Actions（`ci.yml` + `release.yml`）
 - **目标平台**：Linux、OpenWrt（多架构）
-- **前端界面**：LuCI（Lua + CBI 框架，支持中英文 i18n）
+- **前端界面**：LuCI（JavaScript 前端 + ucode 后端，支持中英文 i18n）
 - **测试框架**：Unity v2.6.1
 - **第三方库**：cJSON v1.7.19、OpenSSL (>=1.1.0)、zlib (>=1.2.11)
 - **交叉编译**：OpenWrt SDK（`cmake --preset openwrt`）
@@ -199,7 +199,7 @@ cmake -B build -DBUILD_TESTING=ON && cmake --build build && ctest --test-dir bui
 
 ```
 luci-app-komari-agent-c/
-├── luci-app-komari-agent-c/ # LuCI 前端（Lua + CBI）
+├── luci-app-komari-agent-c/ # LuCI 前端（JavaScript + ucode）
 ├── komari-agent-c/          # OpenWrt 后端包 + C 源代码
 │   ├── cmake/               # CMake 模块化配置（5 个模块）
 │   ├── include/             # 公共头文件（version.h 等）
@@ -290,10 +290,10 @@ Dependabot 自动管理依赖版本更新，每周一检查：
 
 LuCI 前端位于 `luci-app-komari-agent-c/` 目录，提供 Web 配置界面：
 
-- **3 个标签页**：配置（CBI 表单）、状态（实时仪表板）、日志（日志查看器）
-- **6 个后端 JSON API**：status、start、stop、restart、test_connection、log
-- **状态数据契约**：agent 每个上报周期将连接状态与实时指标原子写入 `/tmp/komari-agent-c-status.json`（路径常量见 `komari-agent-c/src/platform/paths.h`），断连时写入 `connected: false`；状态页与 `api_get_status` 据此展示
-- **变更类 API 约定**：start/stop/restart/test_connection 必须为 POST 并校验 CSRF 令牌，视图以携带令牌的 POST 请求调用；新增变更类端点必须遵循同一模式
+- **3 个标签页**：配置（JS 表单）、状态（实时仪表板）、日志（日志查看器）
+- **ubus 后端**：`luci.komari-agent-c` 对象提供 status、start、stop、restart、test_connection、log 六个方法（ucode 实现）
+- **状态数据契约**：agent 每个上报周期将连接状态与实时指标原子写入 `/tmp/komari-agent-c-status.json`（路径常量见 `komari-agent-c/src/platform/paths.h`），断连时写入 `connected: false`；状态页据此展示
+- **变更类方法约定**：start/stop/restart/test_connection 通过 ACL 的 write 权限保护，只读用户不可调用
 - **i18n 支持**：中文（zh_Hans）翻译，`.po` → `.lmo` 编译
 - **ACL 权限**：通过 `luci-app-komari-agent-c` ACL 定义控制访问
 - **包元数据**：使用 `luci.mk` 标准流程，`LUCI_PKGARCH:=all`
@@ -313,7 +313,7 @@ LuCI 前端位于 `luci-app-komari-agent-c/` 目录，提供 Web 配置界面：
 - **env 必须单次注入**：`procd_set_param env KEY=VAL` 每调用一次都会整体替换 env 表、仅最后一对生效，所有代理环境变量以 `set --` 拼装后在同一次调用中传入（或改用 `procd_append_param env`）。
 - **令牌走环境变量**：面板令牌经 `AGENT_TOKEN` 环境变量传递，不使用 `--token` 命令行参数——`/proc/<pid>/cmdline` 全局可读，`/proc/<pid>/environ` 仅属主可读。
 - **用户缺失回退**：init 在 `komari` 系统用户不存在时回退以 root 运行；该用户由 postinst 以 busybox 兼容方式（追加 `/etc/passwd`、`/etc/group`）创建，原版 OpenWrt 无 groupadd/useradd。
-- **报告间隔下限**：`config_validate` 将 interval 钳制为 ≥1 秒（LuCI CBI 表单允许 1.0，低于会被钳制）。
+- **报告间隔下限**：`config_validate` 将 interval 钳制为 ≥1 秒（LuCI 表单允许 1，低于会被钳制）。
 
 ## 多架构支持
 

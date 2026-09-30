@@ -2,7 +2,7 @@
 
 **中文** | [English](CONTRIBUTING.en.md)
 
-感谢您考虑为 Komari Agent（C 语言版本）贡献代码！本文档说明参与贡献的流程与规范。
+感谢您考虑为 Komari Agent 贡献代码！本文档说明参与贡献的流程与规范。
 
 ## 通用要求
 
@@ -124,7 +124,7 @@ ctest --test-dir build --output-on-failure
 
 ```
 luci-app-komari-agent-c/
-├── luci-app-komari-agent-c/ # LuCI 前端（Lua + CBI）
+├── luci-app-komari-agent-c/ # LuCI 前端（JavaScript + ucode）
 ├── komari-agent-c/          # OpenWrt 后端包 + C 源代码
 │   ├── cmake/               # CMake 模块化配置（5 个模块）
 │   ├── include/             # 公共头文件（version.h 等）

@@ -4,112 +4,7 @@
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8"
 
-msgid "Komari Agent (C Language Version)"
-msgstr ""
-
-msgid "Configuration"
-msgstr ""
-
-msgid "Status"
-msgstr ""
-
-msgid "Log"
-msgstr ""
-
-msgid "Service Status"
-msgstr ""
-
-msgid "Running"
-msgstr ""
-
-msgid "Not Running"
-msgstr ""
-
-msgid "Start"
-msgstr ""
-
-msgid "Stop"
-msgstr ""
-
-msgid "Restart"
-msgstr ""
-
-msgid "Test Connection"
-msgstr ""
-
-msgid "Testing..."
-msgstr ""
-
-msgid "Connection successful"
-msgstr ""
-
-msgid "Connection failed"
-msgstr ""
-
-msgid "Failed to start service"
-msgstr ""
-
-msgid "Failed to stop service"
-msgstr ""
-
-msgid "Failed to restart service"
-msgstr ""
-
-msgid "Connection Status"
-msgstr ""
-
-msgid "Connected"
-msgstr ""
-
-msgid "Disconnected"
-msgstr ""
-
-msgid "Panel Server"
-msgstr ""
-
-msgid "System Uptime"
-msgstr ""
-
-msgid "System Metrics"
-msgstr ""
-
-msgid "CPU Usage"
-msgstr ""
-
-msgid "Memory Usage"
-msgstr ""
-
-msgid "Disk Usage"
-msgstr ""
-
-msgid "Network Traffic"
-msgstr ""
-
-msgid "Download Speed"
-msgstr ""
-
-msgid "Upload Speed"
-msgstr ""
-
-msgid "Basic Settings"
-msgstr ""
-
-msgid "Connection Settings"
-msgstr ""
-
-msgid "Web SSH Settings"
-msgstr ""
-
-msgid "Network Interface Settings"
-msgstr ""
-
-msgid "Disk Settings"
-msgstr ""
-
-msgid "Traffic Statistics"
-msgstr ""
-
-msgid "Custom IP Addresses"
+msgid "Actions"
 msgstr ""
 
 msgid "Advanced Settings"
@@ -118,19 +13,55 @@ msgstr ""
 msgid "Authentication Token"
 msgstr ""
 
-msgid "Token for authentication with the panel server"
+msgid "Auto (follows system)"
 msgstr ""
 
-msgid "Panel Server URL"
+msgid "Auto Discovery Key"
 msgstr ""
 
-msgid "URL of the Komari Monitor panel server (e.g., https://panel.example.com)"
+msgid "Auto Refresh"
 msgstr ""
 
-msgid "Report Interval (seconds)"
+msgid "Auto Start"
 msgstr ""
 
-msgid "Interval between status reports (0.5 - 300 seconds)"
+msgid "Auto-discovery key for auto-registration to the panel (optional)"
+msgstr ""
+
+msgid "Basic Settings"
+msgstr ""
+
+msgid "CPU Usage"
+msgstr ""
+
+msgid "Comma-separated list of network interfaces to exclude from monitoring; wildcards are supported"
+msgstr ""
+
+msgid "Comma-separated list of network interfaces to monitor; wildcards such as eth* are supported (empty = all non-virtual interfaces)"
+msgstr ""
+
+msgid "Compatibility alias kept for Go flag parity; on Linux this behaves like the default calculation"
+msgstr ""
+
+msgid "Configuration"
+msgstr ""
+
+msgid "Configuration for Komari Agent - a lightweight monitoring agent for OpenWrt."
+msgstr ""
+
+msgid "Connected"
+msgstr ""
+
+msgid "Connection Settings"
+msgstr ""
+
+msgid "Connection Status"
+msgstr ""
+
+msgid "Connection failed"
+msgstr ""
+
+msgid "Connection successful"
 msgstr ""
 
 msgid "Custom DNS Server"
@@ -139,73 +70,257 @@ msgstr ""
 msgid "Custom DNS server for resolving panel hostname (optional)"
 msgstr ""
 
+msgid "Custom IP Addresses"
+msgstr ""
+
+msgid "Custom IPv4 Address"
+msgstr ""
+
+msgid "Custom IPv6 Address"
+msgstr ""
+
+msgid "Day of month for traffic statistics rotation (0 = disabled, 1-28)"
+msgstr ""
+
+msgid "Disable Auto Update Check"
+msgstr ""
+
+msgid "Disable Compression"
+msgstr ""
+
+msgid "Disable Web SSH"
+msgstr ""
+
+msgid "Disable WebSocket permessage-deflate and HTTP gzip compression"
+msgstr ""
+
+msgid "Disable automatic update checking on startup"
+msgstr ""
+
+msgid "Disable the Web SSH terminal feature for security"
+msgstr ""
+
+msgid "Disabled"
+msgstr ""
+
+msgid "Disconnected"
+msgstr ""
+
+msgid "Disk Settings"
+msgstr ""
+
+msgid "Disk Usage"
+msgstr ""
+
+msgid "Download Speed"
+msgstr ""
+
+msgid "Enabled"
+msgstr ""
+
+msgid "Endpoint URL is required"
+msgstr ""
+
+msgid "Endpoint must start with http:// or https://"
+msgstr ""
+
+msgid "Endpoint not configured"
+msgstr ""
+
+msgid "Exclude Network Interfaces"
+msgstr ""
+
+msgid "Failed to restart service"
+msgstr ""
+
+msgid "Failed to start service"
+msgstr ""
+
+msgid "Failed to stop service"
+msgstr ""
+
+msgid "IPv4"
+msgstr ""
+
+msgid "IPv6"
+msgstr ""
+
 msgid "Ignore Certificate Errors"
 msgstr ""
 
 msgid "Ignore SSL certificate validation errors (not recommended for production)"
 msgstr ""
 
-msgid "Maximum Retries"
-msgstr ""
-
-msgid "Maximum number of connection retry attempts"
-msgstr ""
-
-msgid "Reconnect Interval (seconds)"
-msgstr ""
-
-msgid "Seconds to wait between reconnection attempts"
-msgstr ""
-
-msgid "Info Report Interval (minutes)"
-msgstr ""
-
-msgid "Minutes between full system information reports"
-msgstr ""
-
-msgid "Disable Web SSH"
-msgstr ""
-
-msgid "Disable the Web SSH terminal feature for security"
+msgid "Include Mount Points"
 msgstr ""
 
 msgid "Include Network Interfaces"
 msgstr ""
 
-msgid "Comma-separated list of network interfaces to monitor (empty = all)"
+msgid "Info Report Interval (minutes)"
 msgstr ""
 
-msgid "Exclude Network Interfaces"
+msgid "Interface Language"
 msgstr ""
 
-msgid "Comma-separated list of network interfaces to exclude from monitoring"
+msgid "Interface language follows the system language setting. To switch languages, install the corresponding luci-i18n-komari-agent-c-* package and configure the system language in System → System → Language."
 msgstr ""
 
-msgid "Include Mount Points"
+msgid "Interval between status reports (1 - 300 seconds)"
 msgstr ""
 
-msgid "Comma-separated list of mount points to monitor (empty = all)"
+msgid "Komari Agent"
+msgstr ""
+
+msgid "Komari Agent Configuration"
+msgstr ""
+
+msgid "Komari Agent Log"
+msgstr ""
+
+msgid "Komari Agent Status"
+msgstr ""
+
+msgid "Language Settings"
+msgstr ""
+
+msgid "Log"
+msgstr ""
+
+msgid "Log Content"
+msgstr ""
+
+msgid "Log Lines"
+msgstr ""
+
+msgid "Log Settings"
+msgstr ""
+
+msgid "Maximum Retries"
+msgstr ""
+
+msgid "Maximum interval is 300 seconds"
+msgstr ""
+
+msgid "Maximum number of connection retry attempts"
+msgstr ""
+
+msgid "Maximum value is %d"
+msgstr ""
+
+msgid "Memory Includes Cache"
+msgstr ""
+
+msgid "Memory Usage"
+msgstr ""
+
+msgid "Minimum interval is 1 second"
+msgstr ""
+
+msgid "Minimum value is %d"
+msgstr ""
+
+msgid "Minutes between full system information reports"
 msgstr ""
 
 msgid "Month Rotate Day"
 msgstr ""
 
-msgid "Day of month for traffic statistics rotation (0 = disabled, 1-28)"
+msgid "Must be a number"
 msgstr ""
 
-msgid "Custom IPv4 Address"
+msgid "Network Interface Settings"
+msgstr ""
+
+msgid "No log entries found"
+msgstr ""
+
+msgid "Not Running"
 msgstr ""
 
 msgid "Override detected IPv4 address (optional)"
 msgstr ""
 
-msgid "Custom IPv6 Address"
-msgstr ""
-
 msgid "Override detected IPv6 address (optional)"
 msgstr ""
 
+msgid "Panel Server"
+msgstr ""
 
+msgid "Panel Server URL"
+msgstr ""
+
+msgid "Preferred IP Version"
+msgstr ""
+
+msgid "Preferred IP version for connecting to the panel (empty = system default)"
+msgstr ""
+
+msgid "Raw Memory Calculation"
+msgstr ""
+
+msgid "Reconnect Interval (seconds)"
+msgstr ""
+
+msgid "Refresh"
+msgstr ""
+
+msgid "Report Interval (seconds)"
+msgstr ""
+
+msgid "Report memory usage including cache/buffer (used = total - free)"
+msgstr ""
+
+msgid "Restart"
+msgstr ""
+
+msgid "Running"
+msgstr ""
+
+msgid "Seconds to wait between reconnection attempts"
+msgstr ""
+
+msgid "Semicolon-separated list of mount points to monitor (empty = all physical filesystems)"
+msgstr ""
+
+msgid "Service Status"
+msgstr ""
+
+msgid "Service restarted"
+msgstr ""
+
+msgid "Service started"
+msgstr ""
+
+msgid "Service stopped"
+msgstr ""
+
+msgid "Start"
+msgstr ""
+
+msgid "Status"
+msgstr ""
+
+msgid "Stop"
+msgstr ""
+
+msgid "Stop Auto Refresh"
+msgstr ""
+
+msgid "System Metrics"
+msgstr ""
+
+msgid "System Uptime"
+msgstr ""
+
+msgid "System default"
+msgstr ""
+
+msgid "Test Connection"
+msgstr ""
+
+msgid "Token for authentication with the panel server"
+msgstr ""
 
 msgid "Token is required"
 msgstr ""
@@ -216,91 +331,19 @@ msgstr ""
 msgid "Token must not exceed 256 characters"
 msgstr ""
 
-msgid "Endpoint URL is required"
+msgid "Traffic Statistics"
 msgstr ""
 
 msgid "URL must start with http:// or https://"
 msgstr ""
 
-msgid "Invalid URL format"
+msgid "URL of the Komari Monitor panel server (e.g., https://panel.example.com)"
 msgstr ""
 
-msgid "Must be a number"
+msgid "Upload Speed"
 msgstr ""
 
-msgid "Minimum interval is 0.5 seconds"
-msgstr ""
-
-msgid "Maximum interval is 300 seconds"
-msgstr ""
-
-msgid "Minimum value is %d"
-msgstr ""
-
-msgid "Maximum value is %d"
-msgstr ""
-
-msgid "Invalid IPv4 address format"
-msgstr ""
-
-msgid "IPv4 octets must be between 0 and 255"
-msgstr ""
-
-msgid "Invalid IPv6 address format"
-msgstr ""
-
-msgid "Log Lines"
-msgstr ""
-
-msgid "Refresh"
-msgstr ""
-
-msgid "Auto Refresh"
-msgstr ""
-
-msgid "Stop Auto Refresh"
-msgstr ""
-
-msgid "Clear Log"
-msgstr ""
-
-msgid "Download"
-msgstr ""
-
-msgid "Log Content"
-msgstr ""
-
-msgid "Loading..."
-msgstr ""
-
-msgid "No log entries found"
-msgstr ""
-
-msgid "Are you sure you want to clear the log?"
-msgstr ""
-
-msgid "Log cleared successfully"
-msgstr ""
-
-msgid "Failed to clear log"
-msgstr ""
-
-msgid "Configuration for Komari Agent - a lightweight monitoring agent for OpenWrt."
-msgstr ""
-
-msgid "Komari Agent Status"
-msgstr ""
-
-msgid "Komari Agent Log"
-msgstr ""
-
-msgid "Actions"
-msgstr ""
-
-msgid "Log Settings"
-msgstr ""
-
-msgid "Failed to load log"
+msgid "Web SSH Settings"
 msgstr ""
 
 msgid "d"
@@ -310,93 +353,4 @@ msgid "h"
 msgstr ""
 
 msgid "min"
-msgstr ""
-
-msgid "Service started"
-msgstr ""
-
-msgid "Service stopped"
-msgstr ""
-
-msgid "Service restarted"
-msgstr ""
-
-msgid "Komari Agent Configuration"
-msgstr ""
-
-msgid "Language Settings"
-msgstr ""
-
-msgid "Interface Language"
-msgstr ""
-
-msgid "Auto (follows system)"
-msgstr ""
-
-msgid "Interface language follows the system language setting. To switch languages, install the corresponding luci-i18n-komari-agent-c-* package and configure the system language in System → System → Language."
-msgstr ""
-
-msgid "Auto Discovery Key"
-msgstr ""
-
-msgid "Auto-discovery key for auto-registration to the panel (optional)"
-msgstr ""
-
-
-
-msgid "v1 (Legacy)"
-msgstr ""
-
-msgid "v2 (Current)"
-msgstr ""
-
-msgid "Disable Compression"
-msgstr ""
-
-msgid "Disable data compression for protocol communication"
-msgstr ""
-
-msgid "Disable Auto Update Check"
-msgstr ""
-
-msgid "Disable automatic update checking on startup"
-msgstr ""
-
-msgid "Auto Start"
-msgstr ""
-
-msgid "Enabled"
-msgstr ""
-
-msgid "Disabled"
-msgstr ""
-
-msgid "Preferred IP Version"
-msgstr ""
-
-msgid "Preferred IP version for connecting to the panel (empty = system default)"
-msgstr ""
-
-msgid "System default"
-msgstr ""
-
-msgid "IPv4"
-msgstr ""
-
-msgid "IPv6"
-msgstr ""
-
-msgid "Memory Includes Cache"
-msgstr ""
-
-msgid "Report memory usage including cache/buffer (used = total - free)"
-msgstr ""
-
-msgid "Raw Memory Calculation"
-msgstr ""
-
-msgid "Compatibility alias kept for Go flag parity; on Linux this behaves like the default calculation"
-msgstr ""
-
-msgid "Disable WebSocket permessage-deflate and HTTP gzip compression"
 msgstr ""

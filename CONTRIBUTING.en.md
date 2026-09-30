@@ -124,7 +124,7 @@ The project provides 9 standardized presets (see `CMakePresets.json`):
 
 ```
 luci-app-komari-agent-c/
-├── luci-app-komari-agent-c/ # LuCI frontend (Lua + CBI)
+├── luci-app-komari-agent-c/ # LuCI frontend (JavaScript + ucode)
 ├── komari-agent-c/          # OpenWrt backend package + C source code
 │   ├── cmake/               # Modular CMake configuration (5 modules)
 │   ├── include/             # Public headers (version.h, etc.)
