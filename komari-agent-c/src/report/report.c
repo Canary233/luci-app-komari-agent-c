@@ -688,6 +688,11 @@ int report_upload_ping_result(const agent_config_t *config,
                ? 0 : -1;
 }
 
+/* Number of immediate attempts for the basic info upload. Transient network
+ * failures (connection reset, TLS handshake failure, 5xx/408/429) are retried
+ * with a short backoff before waiting for the next report cycle. */
+#define BASIC_INFO_UPLOAD_ATTEMPTS 3
+
 int report_upload_basic_info(const agent_config_t *config,
                              const char *payload, size_t payload_len) {
     if (!config || !payload || payload_len == 0) return -1;
@@ -699,7 +704,7 @@ int report_upload_basic_info(const agent_config_t *config,
 
     /* Mirror the Go reference (server/basicInfo.go): gzip the body unless
      * the caller disabled compression, and announce it via
-     * Content-Encoding. No retry — failures wait for the next cycle. */
+     * Content-Encoding. Transient transport failures are retried below. */
     const char *body = payload;
     size_t body_len = payload_len;
     char *gz = NULL;
@@ -727,11 +732,27 @@ int report_upload_basic_info(const agent_config_t *config,
     }
 
     int ret = -1;
-    if (http_client_request(&req, &resp) == 0 &&
-        resp.status >= 200 && resp.status < 300) {
-        ret = 0;
+    for (int attempt = 1; attempt <= BASIC_INFO_UPLOAD_ATTEMPTS; attempt++) {
+        int rc = http_client_request(&req, &resp);
+        int status = resp.status;
+        int ok = (rc == 0 && status >= 200 && status < 300);
+        int transient = (rc != 0) || status == 408 || status == 429 ||
+                        (status >= 500 && status <= 599);
+
+        http_client_response_free(&resp);
+
+        if (ok) {
+            ret = 0;
+            break;
+        }
+        if (!transient || attempt == BASIC_INFO_UPLOAD_ATTEMPTS)
+            break;
+
+        /* Short backoff (1s, then 2s). The report thread is the only caller
+         * and runs at most once per info_report_interval, so blocking for a
+         * couple of seconds here is acceptable. */
+        sleep((unsigned)attempt);
     }
-    http_client_response_free(&resp);
     free(gz);
     return ret;
 }
