@@ -118,6 +118,7 @@ void config_init(agent_config_t *config) {
     config->memory_report_raw_used = false;
     config->get_ip_addr_from_nic = false;
     config->disable_compression = false;
+    config->log_enabled = true;
 }
 
 /* Look up an environment variable and copy its value into `buf`.
@@ -212,6 +213,7 @@ int config_load_from_env(agent_config_t *config) {
     config->memory_report_raw_used = get_env_bool("AGENT_MEMORY_REPORT_RAW_USED", config->memory_report_raw_used);
     config->get_ip_addr_from_nic = get_env_bool("AGENT_GET_IP_ADDR_FROM_NIC", config->get_ip_addr_from_nic);
     config->disable_compression = get_env_bool("AGENT_DISABLE_COMPRESSION", config->disable_compression);
+    config->log_enabled = get_env_bool("AGENT_LOG_ENABLED", config->log_enabled);
 
     return 0;
 }
@@ -391,6 +393,14 @@ int config_load_from_file(agent_config_t *config, const char *path) {
             config->disable_compression = (strcasecmp(item->valuestring, "true") == 0);
         }
     }
+
+    if ((item = cJSON_GetObjectItem(root, "log_enabled"))) {
+        if (cJSON_IsBool(item)) {
+            config->log_enabled = cJSON_IsTrue(item);
+        } else if (cJSON_IsString(item)) {
+            config->log_enabled = (strcasecmp(item->valuestring, "true") == 0);
+        }
+    }
     
     cJSON_Delete(root);
     free(json);
@@ -468,6 +478,8 @@ int config_parse_uci_line(agent_config_t *config, const char *raw_line) {
         config->disable_compression = (strcmp(value, "1") == 0 || strcmp(value, "true") == 0);
     } else if (strcmp(key, "disable_auto_update") == 0) {
         config->disable_auto_update = (strcmp(value, "1") == 0 || strcmp(value, "true") == 0);
+    } else if (strcmp(key, "log_enabled") == 0) {
+        config->log_enabled = (strcmp(value, "1") == 0 || strcmp(value, "true") == 0);
     } else if (strcmp(key, "auto_discovery_key") == 0) {
         utils_set_string(config->auto_discovery_key, sizeof(config->auto_discovery_key), value);
     } else if (strcmp(key, "include_nics") == 0) {
@@ -520,6 +532,7 @@ void config_print(const agent_config_t *config) {
     printf("Ignore Unsafe Cert: %s\n", config->ignore_unsafe_cert ? "yes" : "no");
     printf("Max Retries: %d\n", config->max_retries);
     printf("Reconnect Interval: %d seconds\n", config->reconnect_interval);
+    printf("Logging Enabled: %s\n", config->log_enabled ? "yes" : "no");
     printf("=================================\n");
 }
 

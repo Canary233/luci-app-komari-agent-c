@@ -146,6 +146,7 @@ The agent supports five configuration sources, in order of precedence from lowes
 | `host_proc` | string | empty | `HOST_PROC` | - | Host /proc mountpoint in container environments |
 | `disable_auto_update` | bool | `false` | `AGENT_DISABLE_AUTO_UPDATE` | - | Disable automatic update check |
 | `disable_compression` | bool | `false` | `AGENT_DISABLE_COMPRESSION` | - | Disable WebSocket permessage-deflate and HTTP gzip compression |
+| `log_enabled` | bool | `true` | `AGENT_LOG_ENABLED` | - | Whether to emit any log output (disable to silence all logs) |
 | `include_nics` | string | empty | `AGENT_INCLUDE_NICS` | - | Included NICs (comma-separated, wildcards such as `eth*` supported) |
 | `exclude_nics` | string | empty | `AGENT_EXCLUDE_NICS` | - | Excluded NICs (comma-separated, wildcards supported) |
 | `include_mountpoints` | string | empty | `AGENT_INCLUDE_MOUNTPOINTS` | - | Only-counted mountpoints (semicolon `;` separated, comma accepted) |

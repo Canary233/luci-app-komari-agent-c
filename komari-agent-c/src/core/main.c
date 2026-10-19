@@ -1563,6 +1563,14 @@ int main(int argc, char *argv[]) {
         utils_set_string(g_config.config_file, sizeof(g_config.config_file), cli_config_file);
     }
 
+    /* Apply the configured log switch now that all sources are merged. The
+     * early logger_init() above only exists to capture loader warnings; when
+     * logging is disabled, raise the threshold above FATAL so every
+     * KOMARI_LOG_* call becomes a no-op. -v/--verbose still selects DEBUG. */
+    log_cfg.level = !g_config.log_enabled ? LOG_LEVEL_NONE
+                  : (verbose ? LOG_LEVEL_DEBUG : LOG_LEVEL_INFO);
+    logger_init(&log_cfg);
+
     /* Validate the merged configuration before any subsystem consumes it.
      * config_validate repairs out-of-range numeric fields (interval,
      * reconnect_interval, etc.), strips CR/LF from the endpoint to prevent
@@ -1618,9 +1626,11 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    printf("Komari Agent v%s\n", KOMARI_AGENT_C_VERSION_STRING);
-    printf("Connecting to: %s\n", g_config.endpoint);
-    printf("Report interval: %.1f seconds\n", g_config.interval);
+    if (g_config.log_enabled) {
+        printf("Komari Agent v%s\n", KOMARI_AGENT_C_VERSION_STRING);
+        printf("Connecting to: %s\n", g_config.endpoint);
+        printf("Report interval: %.1f seconds\n", g_config.interval);
+    }
     
     char ws_endpoint[512];
     const char *ep = g_config.endpoint;
@@ -1743,7 +1753,8 @@ int main(int argc, char *argv[]) {
         sleep(1);
     }
 
-    printf("Stopping service...\n");
+    if (g_config.log_enabled)
+        printf("Stopping service...\n");
 
     /* Signal the update checker thread to exit its loop promptly
      * (within ~1 second). The thread is joinable, so we wait for it below
@@ -1828,7 +1839,8 @@ int main(int argc, char *argv[]) {
 
     logger_cleanup();
 
-    printf("Service stopped\n");
+    if (g_config.log_enabled)
+        printf("Service stopped\n");
 
     /* OpenSSL 1.1.0+ cleans up automatically; no EVP_cleanup /
      * ERR_remove_state calls are needed. The project requires OpenSSL >= 1.1.0

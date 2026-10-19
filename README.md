@@ -146,6 +146,7 @@ Agent 支持五种配置途径，优先级从低到高依次为：
 | `host_proc` | string | 空 | `HOST_PROC` | - | 容器环境宿主机 /proc 挂载点 |
 | `disable_auto_update` | bool | `false` | `AGENT_DISABLE_AUTO_UPDATE` | - | 禁用自动更新检查 |
 | `disable_compression` | bool | `false` | `AGENT_DISABLE_COMPRESSION` | - | 禁用 WebSocket permessage-deflate 与 HTTP gzip 压缩 |
+| `log_enabled` | bool | `true` | `AGENT_LOG_ENABLED` | - | 是否输出日志（关闭后不再产生任何日志） |
 | `include_nics` | string | 空 | `AGENT_INCLUDE_NICS` | - | 包含的网卡（逗号分隔，支持通配符如 `eth*`） |
 | `exclude_nics` | string | 空 | `AGENT_EXCLUDE_NICS` | - | 排除的网卡（逗号分隔，支持通配符） |
 | `include_mountpoints` | string | 空 | `AGENT_INCLUDE_MOUNTPOINTS` | - | 仅统计的挂载点（分号 `;` 分隔，兼容逗号） |

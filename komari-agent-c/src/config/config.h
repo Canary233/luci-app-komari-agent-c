@@ -53,6 +53,7 @@ typedef struct {
     bool memory_report_raw_used;
     bool get_ip_addr_from_nic;
     bool disable_compression;   /* Whether to disable gzip/permessage-deflate compression */
+    bool log_enabled;           /* Whether to emit any log output at all */
 } agent_config_t;
 
 /**

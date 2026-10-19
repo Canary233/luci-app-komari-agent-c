@@ -342,3 +342,9 @@ msgstr ""
 
 msgid "min"
 msgstr ""
+
+msgid "Enable Logging"
+msgstr ""
+
+msgid "Emit agent log messages to the system log. Disable to silence all output."
+msgstr ""

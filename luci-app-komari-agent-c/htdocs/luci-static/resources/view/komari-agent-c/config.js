@@ -215,6 +215,10 @@ return view.extend({
 			_('Disable automatic update checking on startup'));
 		o.default = '0';
 
+		o = s.option(form.Flag, 'log_enabled', _('Enable Logging'),
+			_('Emit agent log messages to the system log. Disable to silence all output.'));
+		o.default = '1';
+
 		return m.render();
 	}
 });

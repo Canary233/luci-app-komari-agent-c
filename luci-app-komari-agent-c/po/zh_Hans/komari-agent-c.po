@@ -345,3 +345,9 @@ msgstr "小时"
 
 msgid "min"
 msgstr "分钟"
+
+msgid "Enable Logging"
+msgstr "启用日志"
+
+msgid "Emit agent log messages to the system log. Disable to silence all output."
+msgstr "将 Agent 日志输出到系统日志；关闭后不再产生任何日志。"
